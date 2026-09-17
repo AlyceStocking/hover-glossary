@@ -46,4 +46,8 @@ export const SEED_TABLE = {
   DeepSeek: [
     { text: '深度求索（本模型的开发方）', kind: '专有名词', weight: 100 },
   ],
+  PTY: [
+    { text: '伪终端（pseudo-terminal）', kind: '缩写', weight: 100, tags: ['系统'] },
+    { text: 'pty 是一个可持久化的交互式终端会话', kind: '功能', weight: 20, tags: ['DSH'] },
+  ],
 };
