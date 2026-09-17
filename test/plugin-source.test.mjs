@@ -54,6 +54,28 @@ const cursorOf = (needle, offset = 0) => SAMPLE.indexOf(needle) + offset;
 /** 沙箱返回的对象来自另一个 realm, 原型不同, 因此统一按 JSON 比较 */
 const j = (value) => JSON.stringify(value);
 
+/**
+ * 在沙箱里求值 Client 半的整个函数体 (把末尾的 return 换成暴露内部索引),
+ * 取回它自己的 INDEX 与光标取词函数, 用于校验客户端识别结果。
+ * @param {string} source - define.code.client
+ */
+function makeClientSandbox(source) {
+  const marker = '\nreturn {';
+  const at = source.lastIndexOf(marker);
+  assert.ok(at > 0, 'client 源码应以 return { 结束');
+  const body = source.slice(0, at) + `
+    globalThis.__index__ = INDEX;
+    globalThis.__termAt__ = (text, cursor) => {
+      const hit = tokenAt(text, cursor);
+      return hit ? hit.term : null;
+    };`;
+  const sandbox = { console: { log() {}, error() {} } };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(`(function(){${body}\n})()`, sandbox, { filename: 'client-engine.js' });
+  return sandbox;
+}
+
 test('用例8: 两个函数体都是合法源码且不含 ESM 语法', () => {
   for (const half of ['host', 'client']) {
     const source = define.code[half];
@@ -82,12 +104,14 @@ test('用例9: Host RPC 按光标返回 1..N 条联想', () => {
   assert.equal(long.term, '世界卫生组织');
   assert.equal(long.entries[0].text, '世界卫生组织（WHO），简称世卫组织');
 
-  // 3) 跨空格短语: 光标在 United / Nations 任意位置都整体命中
-  for (const offset of [0, 6, 9]) {
+  // 3) 跨空格短语: 光标在第一个词上时整体命中 (短语可向右跨过内部空格)
+  for (const offset of [0, 3, 6]) {
     const un = host.call('glossary/resolve', { text: SAMPLE, cursor: cursorOf('United Nations', offset) });
     assert.equal(un.term, 'United Nations', `offset ${offset} 应命中整个短语`);
     assert.equal(un.entries.length, 2);
   }
+  // 停在第二个词上时按该词自身查询, 不回头扩张
+  assert.equal(host.call('glossary/resolve', { text: SAMPLE, cursor: cursorOf('United Nations', 9) }).entries.length, 0);
 
   // 4) Client 直接按词查询 (悬停分支)
   const pinned = host.call('glossary/resolve', { text: SAMPLE, cursor: 0, term: 'api' });
@@ -115,41 +139,89 @@ test('用例9: Host RPC 按光标返回 1..N 条联想', () => {
   assert.ok(host.logs.some((line) => line.includes('词库就绪')), 'Host 启动时应打印词库规模');
 });
 
-test('用例10: 面板源码里的演示段落覆盖全部预置词, 且切分逻辑正确', () => {
+test('用例10: 客户端源码只装饰真实正文, 不含演示面板/模拟控件', () => {
   const source = define.code.client;
 
   // 面板必须把 SEED_TABLE / SAMPLE_TEXT 内联进来, 才能独立运行
   assert.ok(/const SEED_TABLE\s*=/.test(source), 'Client 应内联 SEED_TABLE');
-  assert.ok(/const SAMPLE_TEXT\s*=/.test(source), 'Client 应内联 SAMPLE_TEXT');
   for (const term of Object.keys(SEED_TABLE)) {
     assert.ok(source.includes(term), `Client 内联词库缺少 "${term}"`);
   }
 
-  // 用沙箱复核面板里 CELLS 的切分: 每个可悬停单元的文本必须与它的 term 一致
-  const sandbox = { console: { log() {}, error() {} } };
-  sandbox.globalThis = sandbox;
-  vm.createContext(sandbox);
-  const probe = vm.runInContext(
-    `${source.slice(0, source.indexOf('const CSS ='))}
-     globalThis.__cells__ = CELLS;
-     globalThis.__index__ = INDEX;`,
-    sandbox,
-    { filename: 'client-cells.js' },
-  );
-  void probe;
-  const cells = sandbox.__cells__;
-  const index = sandbox.__index__;
-  assert.ok(Array.isArray(cells) && cells.length > 20, 'CELLS 切分结果为空');
+  // 不再有演示面板: 必须没有 CELLS/演示段落相关的东西
+  assert.ok(!/const CELLS\s*=/.test(source), '旧的演示面板切分逻辑应已移除');
+  assert.ok(!/hg-panel/.test(source), '不应再注册演示面板');
+  assert.ok(!/simulate|模拟光标/.test(source), '不应再有模拟光标控件');
 
-  const hoverable = cells.filter((c) => c.term);
-  assert.ok(hoverable.length >= 8, '可悬停单元太少');
-  for (const cell of hoverable) {
-    assert.equal(cell.text.normalize('NFKC').toLowerCase(), cell.term.normalize('NFKC').toLowerCase());
-    assert.ok(index.lookup(cell.term).length >= 1, `演示词 ${cell.term} 没有条目`);
+  // 悬停引擎的必要组成: 区域锚点 + 光标取字 + 浮层
+  assert.ok(source.includes('data-hg-zone'), '缺少会话正文区域锚点');
+  assert.ok(/caretRangeFromPoint|caretPositionFromPoint/.test(source), '缺少光标处字符定位');
+  assert.ok(/shell\.overlay/.test(source), '浮层应注册在 shell.overlay');
+  assert.ok(source.includes('conversation.chat.turnTail'), '应在每轮尾部放置区域锚点');
+  assert.ok(/addEventListener\('mousemove'/.test(source), '应监听鼠标移动');
+  assert.ok(!/\bdocument\.body\s*\.\s*(append|innerHTML|style)/.test(source), '不应改写 product DOM');
+
+  // 客户端内联的词库必须与 Host 一致: 同一段真实正文, 逐光标结果相同
+  const sandbox = makeClientSandbox(source);
+  const clientTermAt = (text, cursor) => sandbox.__termAt__(text, cursor);
+  const clientEntries = (term) => sandbox.__index__.lookup(term);
+  assert.equal(sandbox.__index__.size, Object.keys(SEED_TABLE).length);
+
+  // 用 "真实正文" 复刻需求场景: 用户输入的句子 + 我输出的句子
+  const realText = [
+    '帮我查一下 WHO 的说法',
+    'WHO 是世卫组织, 全称 World Health Organization, 也叫 世界卫生组织。',
+  ];
+  const seen = new Set();
+  for (const text of realText) {
+    for (let cursor = 0; cursor < text.length; cursor += 1) {
+      const term = clientTermAt(text, cursor);
+      if (!term) continue;
+      const entries = clientEntries(term);
+      if (entries.length === 0) continue;
+      seen.add(term.toLowerCase());
+      // 同一光标在 Host 侧必须给出完全相同的条目
+      const hostResult = host.call('glossary/resolve', { text, cursor, term });
+      assert.equal(
+        j(hostResult.entries.map((e) => e.text)),
+        j(entries.map((e) => e.text)),
+        `光标 ${cursor} (${term}) 处 Host/Client 不一致`,
+      );
+    }
   }
-  // 整段文本拼接后应与 SAMPLE_TEXT 一致
-  const joined = cells.map((c) => c.text).join('');
-  assert.ok(joined.includes('United Nations'), '拼接后的演示文本缺少短语');
-  assert.ok(joined.includes('WHO'), '拼接后的演示文本缺少 WHO');
+  assert.ok(seen.has('who'), '真实正文里的 WHO 应能被客户端识别');
+  assert.ok(seen.has('世界卫生组织'), '真实正文里的多字词应能被识别');
+  // 未收录的词不产生浮层
+  assert.equal(clientEntries('这句话里没有收录的词').length, 0);
+});
+
+test('用例11: 真实对话文本下 Host 与 Client 逐光标一致', () => {
+  const sandbox = makeClientSandbox(define.code.client);
+
+  // 模拟一段你和我的真实对话文本 (包含中英混排、多字词与跨空格短语)
+  const transcript = [
+    '我输入: 请解释 WHO 和 United Nations 的关系',
+    '我输出: WHO 即 世卫组织, 隶属 United Nations; DSH 里 Cordis 插件负责扩展。',
+    '再输入: 那 API 呢? 以及 世界卫生组织 的官网, 顺便说说 LLM 和 DeepSeek',
+  ].join('\n');
+
+  let hits = 0;
+  for (let cursor = 0; cursor < transcript.length; cursor += 1) {
+    const term = sandbox.__termAt__(transcript, cursor);
+    if (!term) continue;
+    const entries = sandbox.__index__.lookup(term);
+    if (entries.length === 0) continue;
+    hits += 1;
+    const hostResult = host.call('glossary/resolve', { text: transcript, cursor, term });
+    assert.ok(hostResult.entries.length >= 1, `光标 ${cursor} 处 Host 未命中`);
+    assert.equal(
+      j(hostResult.entries.map((e) => e.text)),
+      j(entries.map((e) => e.text)),
+      `光标 ${cursor} (${term}) 处 Host/Client 条目不一致`,
+    );
+  }
+  assert.ok(hits >= 10, `真实对话文本中命中太少 (${hits})`);
+  // 未被收录的词不产生任何浮层
+  assert.equal(sandbox.__index__.lookup('这句话里没有收录的词').length, 0);
 });
 

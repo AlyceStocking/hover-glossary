@@ -1,8 +1,9 @@
 /**
  * hover-glossary / seed-data.mjs
  *
- * 预置词库 (term -> 1..N 条目) 与演示文本。
- * 修改此文件后请执行 `node scripts/build-client.mjs` 重新生成客户端内联副本。
+ * 预置词库 (term -> 1..N 条目)。
+ * 这是插件唯一的映射来源: 它不出现在 GUI 里, 由 Host 持有并通过 RPC 提供查询。
+ * 修改此文件后请执行 `node scripts/build-client.mjs` 重新生成内联副本。
  */
 
 /**
@@ -42,36 +43,7 @@ export const SEED_TABLE = {
     { text: '联合国（UN）', kind: '国际组织', weight: 100 },
     { text: '1945 年成立的政府间国际组织', kind: '说明', weight: 50 },
   ],
+  DeepSeek: [
+    { text: '深度求索（本模型的开发方）', kind: '专有名词', weight: 100 },
+  ],
 };
-
-/**
- * 演示区里预置的词 (为了让鼠标还没动就知道有哪些词可悬停)。
- * @type {string[]}
- */
-export const SAMPLE_TERMS = ['WHO', 'API', 'DSH', 'Cordis', 'LLM', '世卫组织', '世界卫生组织', 'United Nations'];
-
-/**
- * 演示段落。每个 chunk 或者是一个可悬停的词 (`term`), 或者是普通文字。
- * @type {Array<{text:string, term?:string}>}
- */
-export const SAMPLE_TEXT = [
-  { text: '把光标停在 ' },
-  { text: 'WHO', term: 'WHO' },
-  { text: ' 上，会显示 ' },
-  { text: '1、世卫组织 2、谁', term: null },
-  { text: '。同样可以试 ' },
-  { text: 'API', term: 'API' },
-  { text: '、' },
-  { text: 'DSH', term: 'DSH' },
-  { text: '、' },
-  { text: 'Cordis', term: 'Cordis' },
-  { text: '、' },
-  { text: 'LLM', term: 'LLM' },
-  { text: '、' },
-  { text: '世卫组织', term: '世卫组织' },
-  { text: '、' },
-  { text: '世界卫生组织', term: '世界卫生组织' },
-  { text: '、' },
-  { text: 'United Nations', term: 'United Nations' },
-  { text: '。' },
-];

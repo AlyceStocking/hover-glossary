@@ -9,8 +9,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { Lexicon, createLexicon, normalize, tokenAt, longestTermAt } from '../src/lexicon.mjs';
-import { SEED_TABLE, SAMPLE_TEXT, SAMPLE_TERMS } from '../src/seed-data.mjs';
+import { Lexicon, createLexicon, normalize, tokenAt } from '../src/lexicon.mjs';
+import { SEED_TABLE } from '../src/seed-data.mjs';
 
 const lexicon = createLexicon(SEED_TABLE);
 
@@ -60,13 +60,23 @@ test('用例2: 光标查询按最长词优先命中', () => {
   assert.equal(short.term, '世卫组织');
   assert.equal(short.entries[0].text, '世界卫生组织（WHO）');
 
-  // 多词短语 "United Nations" 跨空格命中
+  // 多词短语 "United Nations": 光标在短语起点上时整体命中
   const phrase = lexicon.lookupAt('joined United Nations in 1945', 9);
   assert.equal(phrase.term, 'United Nations');
   assert.equal(phrase.start, 7);
   assert.equal(phrase.end, 21);
 
-  assert.equal(longestTermAt(lexicon, text, 1).key, '世界卫生组织');
+  // 光标在短语的第二个词上时, 命中该词本身 (未收录故为空); 不影响第一个词的命中
+  assert.equal(lexicon.lookupAt('joined United Nations in 1945', 15).entries.length, 0);
+
+  // CJK: 光标压在多字词的任意一个字上, 都从该词真正的起点开始命中
+  const cjk = lexicon.lookupAt('即世卫组织', 1);
+  assert.equal(cjk.term, '世卫组织', '光标在 "世" 上时命中的是 "世卫组织"');
+  assert.equal(cjk.start, 1);
+  assert.equal(cjk.end, 5);
+  assert.equal(lexicon.lookupAt('即世卫组织', 4).term, '世卫组织', '光标在词尾字上同样命中');
+  // 光标压在前一个独立字上时不会替它扩张成后面的词
+  assert.equal(lexicon.lookupAt('即世卫组织', 0).entries.length, 0);
 });
 
 /* ------------------------------------------------------------------ *
@@ -125,63 +135,77 @@ test('用例4: tokenAt / lookupAt 能正确定位光标所在词', () => {
 });
 
 /* ------------------------------------------------------------------ *
- * 用例 5: 完整链路 —— 演示文本 + 词库结构自检
+ * 用例 5: 完整链路 —— 真实正文上的逐光标查询 + 词库结构自检
  * ------------------------------------------------------------------ */
-test('用例5: 演示文本中的每个可悬停词都能查到条目, 且词库结构自检通过', () => {
+test('用例5: 真实正文里每个收录的词都能被光标命中, 且词库结构自检通过', () => {
   // 结构自检
   const report = lexicon.validate();
   assert.equal(report.ok, true, `词库自检失败: ${report.problems.join('; ')}`);
 
   // 统计口径一致
-  assert.equal(lexicon.size, new Set(Object.keys(SEED_TABLE).map((t) => t.toLowerCase())).size);
+  assert.equal(lexicon.size, Object.keys(SEED_TABLE).length);
   assert.equal(
     lexicon.itemCount,
     Object.values(SEED_TABLE).reduce((n, list) => n + list.length, 0),
   );
 
-  // 演示段落里所有标记为可悬停的词都必须有解释, 否则 UI 会出现 "高亮但无内容"
-  const hoverable = SAMPLE_TEXT.filter((c) => typeof c.term === 'string' && c.term.length > 0);
-  assert.equal(hoverable.length, SAMPLE_TERMS.length, '演示文本覆盖的预置词数量应与 SAMPLE_TERMS 一致');
-  for (const chunk of hoverable) {
-    const entries = lexicon.lookup(chunk.term);
-    assert.ok(entries.length >= 1, `演示词 "${chunk.term}" 在词库中缺失`);
-    assert.ok(entries[0].text.length > 0);
+  // 词库里的每个词都必须至少有一条解释, 否则悬停会出现 "有词无内容"
+  for (const [term, items] of Object.entries(SEED_TABLE)) {
+    const entries = lexicon.lookup(term);
+    assert.equal(entries.length, items.length, `"${term}" 条目数不一致`);
+    assert.ok(entries.every((e) => e.text.length > 0), `"${term}" 有空条目`);
+    assert.deepEqual(
+      entries.map((e) => e.index),
+      entries.map((_, i) => i + 1),
+      `"${term}" 的编号不连续`,
+    );
   }
 
-  // 从拼接后的整段文本出发, 用真实光标位置再验证一次端到端查询
-  let full = '';
-  const spans = [];
-  for (const chunk of SAMPLE_TEXT) {
-    spans.push({ start: full.length, end: full.length + chunk.text.length, term: chunk.term || null });
-    full += chunk.text;
-  }
+  // 用真实正文复刻端到端链路: 光标停在任何位置, 命中词必须覆盖光标
+  // 注意 CJK 没有分词边界, 连续汉字整段成一个 token: "即世卫组织" 里 "即" 会
+  // 成为该 token 的首字符, 因此收录词自然写作 "即 世卫组织" (或前面是标点/行首)。
+  const full = [
+    '我输入: 请解释 WHO 与 United Nations 的关系',
+    '我输出: WHO 即 世卫组织, 也叫 世界卫生组织; DSH 的 Cordis 插件负责扩展。',
+    '再输入: API 和 LLM 分别是什么? DeepSeek 也收录了吗',
+  ].join('\n');
+
+  const expected = [
+    ['WHO', 2],
+    ['世卫组织', 2],
+    ['世界卫生组织', 1],
+    ['United Nations', 2],
+    ['DSH', 2],
+    ['Cordis', 2],
+    ['API', 3],
+    ['LLM', 2],
+    ['DeepSeek', 1],
+  ];
   let probes = 0;
-  for (const span of spans) {
-    if (!span.term) continue;
-    const chunkText = full.slice(span.start, span.end);
-    for (let cursor = span.start; cursor < span.end; cursor += 1) {
-      if (/\s/.test(full[cursor])) continue; // 光标落在词间空白: UI 不清空面板, 归属前一个词
+  for (const [term, count] of expected) {
+    const start = full.toLowerCase().indexOf(term.toLowerCase());
+    assert.ok(start >= 0, `正文中缺少 ${term}`);
+    // 短语只能从它的第一个词开始命中 (光标停在第二个词上时按那个词自身查询),
+    // 所以探针只覆盖第一个词。
+    const firstWord = term.split(' ')[0];
+    for (let cursor = start; cursor < start + firstWord.length; cursor += 1) {
       const found = lexicon.lookupAt(full, cursor);
       probes += 1;
       assert.ok(found.entries.length >= 1, `光标 ${cursor} 应命中条目`);
-      // 命中的词必须落在本 chunk 内 (允许 "United Nations" 这类短语的分词片段)
+      // 命中区间必须覆盖光标, 且命中的词必须是正文的真实子串
       assert.ok(
-        found.start >= span.start && found.end <= span.end,
-        `光标 ${cursor}: 命中 ${JSON.stringify(found.term)} 越出了 ${JSON.stringify(chunkText)}`,
+        found.start <= cursor && cursor < found.end,
+        `光标 ${cursor}: 命中区间 ${found.start}-${found.end} 未覆盖光标`,
       );
-      assert.ok(
-        chunkText.toLowerCase().includes(found.term.toLowerCase()),
-        `光标 ${cursor}: 命中 ${JSON.stringify(found.term)} 不属于 ${JSON.stringify(chunkText)}`,
-      );
+      assert.equal(full.slice(found.start, found.end), found.term);
+      // 多字词 (CJK) 从词内任意位置都应解析回该词本身
+      if (!term.includes(' ')) {
+        assert.equal(found.term, term, `光标 ${cursor} 应命中 ${term}`);
+        assert.equal(found.entries.length, count, `${term} 应有 ${count} 条`);
+      }
     }
   }
-  assert.ok(probes > 10, '探针数量应覆盖整段演示文本');
-
-  // 跨 token 的短语: 短语内部任意位置 (含空格、后一个词) 都能整体命中
-  const united = spans.find((s) => s.term === 'United Nations');
-  assert.equal(lexicon.lookupAt(full, united.start).term, 'United Nations', '短语首字符');
-  assert.equal(lexicon.lookupAt(full, united.start + 3).term, 'United Nations', '短语中间');
-  assert.equal(lexicon.lookupAt(full, united.end - 1).term, 'United Nations', '短语最后一个词');
+  assert.ok(probes > 30, '探针数量应覆盖全部收录词');
 
   // 顺序稳定: 同样输入重复查询结果一致
   assert.deepEqual(lexicon.lookup('WHO'), lexicon.lookup('WHO'));

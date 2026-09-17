@@ -17,10 +17,17 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
 import { createLexicon } from '../src/lexicon.mjs';
-import { SEED_TABLE, SAMPLE_TEXT } from '../src/seed-data.mjs';
+import { SEED_TABLE } from '../src/seed-data.mjs';
 import { buildInlineSource } from '../scripts/build-client.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+/** 用例 6 使用的 "真实正文" 样本: 覆盖英文词、多字词与跨空格短语 */
+const SAMPLE_TEXT = [
+  '我输入: 请解释 WHO 与 United Nations 的关系',
+  '我输出: WHO 即 世卫组织, 也叫 世界卫生组织; DSH 的 Cordis 插件负责扩展。',
+  '再输入: API 和 LLM 分别是什么? DeepSeek 也收录了吗',
+].join('\n');
 
 /** 在沙箱里求值内联源码, 取回它自己构造的 Lexicon */
 function loadInlineLexicon() {
@@ -45,8 +52,8 @@ test('用例6: 内联的客户端副本与 src/ 行为完全一致', () => {
   // deepEqual 会因原型不同而判不等。
   assert.equal(JSON.stringify(inline.list()), JSON.stringify(source.list()));
 
-  // 光标查询在整段演示文本的每一个位置都一致
-  const full = SAMPLE_TEXT.map((c) => c.text).join('');
+  // 光标查询在整段真实正文的每一个位置都一致
+  const full = SAMPLE_TEXT;
   let checked = 0;
   for (let cursor = 0; cursor <= full.length; cursor += 1) {
     const a = inline.lookupAt(full, cursor);
@@ -58,7 +65,8 @@ test('用例6: 内联的客户端副本与 src/ 行为完全一致', () => {
     );
     checked += 1;
   }
-  assert.ok(checked > 50, '应覆盖整段文本');
+  assert.ok(checked > 100, '应覆盖整段文本');
+  assert.ok(source.lookupAt(full, full.indexOf('WHO')).entries.length === 2, '样本文本应能被解析');
 
   // 内联源码里不能残留 ESM 语法, 否则 Cordis 客户端闭包会解析失败
   const raw = readFileSync(resolve(root, 'plugin/client-inline.js'), 'utf8');

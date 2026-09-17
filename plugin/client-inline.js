@@ -59,23 +59,6 @@ function tokenAt(text, cursor) {
 }
 
 
-function longestTermAt(lexicon, text, cursor, window = 16) {
-  const hit = tokenAt(text, cursor);
-  const start = hit ? hit.start : Math.max(0, Math.min(text.length, Math.trunc(cursor || 0)));
-  const limit = Math.min(text.length, start + window);
-  let best = null;
-  for (let end = start + 1; end <= limit; end += 1) {
-    if (!isWordChar(text[end - 1])) break;
-    const key = normalize(text.slice(start, end));
-    if (key.length > 0 && lexicon.has(key)) best = { key, start, end };
-  }
-  return best;
-}
-
-/* ------------------------------------------------------------------ *
- * Lexicon
- * ------------------------------------------------------------------ */
-
 
 
 class Lexicon {
@@ -191,44 +174,36 @@ class Lexicon {
         if (next < text.length) return this.lookupAt(text, next, opts);
       }
     }
-    const anchor = hit ? hit.start : Math.max(0, Math.min(text.length, Math.trunc(cursor || 0)));
-    const span = Math.max(1, window);
-
-    // 候选起点: 从光标所在词首向前回溯, 允许跨过短语内部空格 ("United Nations")。
-    // 这样鼠标停在短语的第二个词上时, 也能整体命中短语。
-    const starts = [anchor];
-    let s = anchor;
-    while (s > 0 && anchor - s < span) {
-      const prev = text[s - 1];
-      if (isWordChar(prev)) {
-        s -= 1;
-        starts.push(s);
-        continue;
-      }
-      // 向前跨一个内部空格, 且空格之前还有词 -> 短语可能从这里开始
-      if ((prev === ' ' || prev === '\t') && s - 2 >= 0 && isWordChar(text[s - 2]) && anchor - (s - 2) <= span) {
-        s -= 2;
-        starts.push(s);
-        continue;
-      }
-      break;
+    const tokenStart = hit ? Math.min(hit.start, Math.max(0, Math.min(text.length, Math.trunc(cursor || 0)))) : 0;
+    const tokenEnd = hit ? hit.end : 0;
+    const anchored = hit !== null && hit !== undefined;
+    // 扫描起点候选: 从光标所在 token 的首字符一直到光标本身。
+    // 向左回溯是必要的 —— CJK 表格文字整段成一个 token, 光标压在 "世" 上时
+    // 命中的应当是 "世卫组织" (从 "世" 开始), 而光标压在 "界" 上时应当
+    // 仍能命中 "世界卫生组织" (从 "世" 开始)。
+    // 不越过 token 首字符, 因此不会吞进前一个独立 token 的字。
+    const starts = [];
+    if (anchored) {
+      const cursorPos = Math.max(0, Math.min(text.length, Math.trunc(cursor || 0)));
+      for (let s = tokenStart; s <= cursorPos; s += 1) starts.push(s);
     }
-
-    // 候选终点: 从每个起点向右扩展; 只有跨过 "词-空格-词" 才能继续, 否则收束。
-    // 只保留 "向右越过光标" 的候选 —— 即覆盖光标的子串。
-    // 注意不能要求覆盖到整个 token 的末尾, 否则 "世界卫生组织发布报告" 这类
-    // 长 token 的内部前缀 (世界卫生组织) 会被整体丢掉。
-    const cursorPos = Number.isFinite(cursor) ? Math.max(0, Math.min(text.length, Math.trunc(cursor))) : anchor;
+    if (starts.length === 0) {
+      starts.push(Math.max(0, Math.min(text.length, Math.trunc(cursor || 0))));
+    }
+    const cursorPos = anchored ? Math.max(0, Math.min(text.length, Math.trunc(cursor || 0))) : starts[0];
     const candidates = [];
-    for (const from of starts) {
+    for (const start of starts) {
+      // 每个起点最多向右读 "最长登记词" 个字符; 但光标所在 token 必须被读完,
+      // 否则 "世界卫生组织发布报告" 这类长 token 的内部词会被截断。
+      const stop = Math.min(text.length, Math.max(anchored && start === tokenStart ? tokenEnd : 0, start + Math.max(1, window)));
       let sawWordChar = false;
-      const stop = Math.min(text.length, from + span);
-      for (let end = from + 1; end <= stop; end += 1) {
+      for (let end = start + 1; end <= stop; end += 1) {
         const ch = text[end - 1];
         if (isWordChar(ch)) {
           sawWordChar = true;
+          // 候选必须覆盖光标, 否则只是光标左侧的碎片
           if (end > cursorPos) {
-            candidates.push({ key: normalize(text.slice(from, end)), start: from, end });
+            candidates.push({ key: normalize(text.slice(start, end)), start, end });
           }
           continue;
         }
@@ -237,7 +212,7 @@ class Lexicon {
       }
     }
 
-    // 最长优先: 起点越靠前、终点越靠后 = 越长的候选
+    // 最长优先
     candidates.sort((a, b) => b.end - b.start - (a.end - a.start) || a.start - b.start);
     for (const candidate of candidates) {
       const list = this.entries.get(candidate.key);
@@ -259,7 +234,7 @@ class Lexicon {
         return { term: hit.term, key, start: hit.start, end: hit.end, entries: list.map((e) => ({ ...e })) };
       }
     }
-    return { term: hit ? hit.term : '', key: '', start: anchor, end: anchor, entries: [] };
+    return { term: hit ? hit.term : '', key: '', start: cursorPos, end: cursorPos, entries: [] };
   }
 
   
@@ -328,30 +303,7 @@ const SEED_TABLE = {
     { text: '联合国（UN）', kind: '国际组织', weight: 100 },
     { text: '1945 年成立的政府间国际组织', kind: '说明', weight: 50 },
   ],
+  DeepSeek: [
+    { text: '深度求索（本模型的开发方）', kind: '专有名词', weight: 100 },
+  ],
 };
-
-
-const SAMPLE_TERMS = ['WHO', 'API', 'DSH', 'Cordis', 'LLM', '世卫组织', '世界卫生组织', 'United Nations'];
-
-
-const SAMPLE_TEXT = [
-  { text: '把光标停在 ' },
-  { text: 'WHO', term: 'WHO' },
-  { text: ' 上，会显示 ' },
-  { text: '1、世卫组织 2、谁', term: null },
-  { text: '。同样可以试 ' },
-  { text: 'API', term: 'API' },
-  { text: '、' },
-  { text: 'DSH', term: 'DSH' },
-  { text: '、' },
-  { text: 'Cordis', term: 'Cordis' },
-  { text: '、' },
-  { text: 'LLM', term: 'LLM' },
-  { text: '、' },
-  { text: '世卫组织', term: '世卫组织' },
-  { text: '、' },
-  { text: '世界卫生组织', term: '世界卫生组织' },
-  { text: '、' },
-  { text: 'United Nations', term: 'United Nations' },
-  { text: '。' },
-];
