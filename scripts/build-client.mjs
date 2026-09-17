@@ -57,12 +57,62 @@ ${seedCode}
 `;
 }
 
+/**
+ * 把某个半边的模板替换成含内联副本的成品源码。
+ * 模板里用下面的标记包住占位符, 替换时整块保留标记, 只换占位符内容。
+ * @param {string} relPath
+ * @returns {string}
+ */
+export function composeHalf(relPath) {
+  const template = readFileSync(resolve(root, relPath), 'utf8');
+  const marker = /\/\* =+ 内联区开始[^*]*\*\/\n\/\*__INLINE_SOURCE__\*\/\n\/\* =+ 内联区结束 =+ \*\//;
+  if (!marker.test(template)) {
+    throw new Error(`${relPath} 缺少内联区占位标记`);
+  }
+  const composed = template.replace(marker, `/* ===== 内联区开始 (由 build-client.mjs 从 src/ 生成) ===== */\n${buildInlineSource()}\n/* ===== 内联区结束 ===== */`);
+  // 只检查内联区内部: 文件头注释里可能本来就提到过占位符名字
+  const start = composed.indexOf('内联区开始');
+  const end = composed.indexOf('内联区结束', start);
+  if (start < 0 || end < 0 || composed.slice(start, end).includes('__INLINE_SOURCE__')) {
+    throw new Error(`${relPath} 内联区仍有未替换的占位符`);
+  }
+  return composed;
+}
+
+/**
+ * 校验一段动态插件源码是合法的函数体, 且不含 ESM 语法。
+ * @param {string} source
+ * @param {string} label
+ */
+export function assertPlainFunctionBody(source, label) {
+  if (/^\s*(import|export)\s/m.test(source)) throw new Error(`${label}: 不应包含 import/export`);
+  if (/\brequire\s*\(/.test(source)) throw new Error(`${label}: 不应包含 require`);
+  // new Function 只做语法检查, 不执行
+  // eslint-disable-next-line no-new-func
+  new Function(source);
+  return true;
+}
+
 const out = buildInlineSource();
 
 mkdirSync(resolve(root, 'plugin'), { recursive: true });
 const target = resolve(root, 'plugin/client-inline.js');
 writeFileSync(target, out, 'utf8');
 
+const hostSource = composeHalf('plugin/host-service.js');
+const clientSource = composeHalf('plugin/client-panel.js');
+assertPlainFunctionBody(hostSource, 'host-service.js');
+assertPlainFunctionBody(clientSource, 'client-panel.js');
+
+// 交给 cordis_define 的成品: 只含两个函数体字符串
+const define = {
+  name: 'Hover Glossary',
+  purpose: '光标悬停在预置词上时显示该词的 1..N 条联想释义',
+  code: { host: hostSource, client: clientSource },
+};
+writeFileSync(resolve(root, 'plugin/cordis-define.json'), JSON.stringify(define, null, 2), 'utf8');
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   console.log(`[build-client] wrote ${target} (${out.length} chars)`);
+  console.log(`[build-client] wrote plugin/cordis-define.json (host ${hostSource.length} / client ${clientSource.length} chars)`);
 }
