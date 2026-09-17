@@ -68,11 +68,13 @@ function makeClientSandbox(source) {
     globalThis.__termAt__ = (text, cursor) => {
       const hit = tokenAt(text, cursor);
       return hit ? hit.term : null;
-    };`;
+    };
+    globalThis.__tokenAt__ = (text, cursor) => tokenAt(text, cursor);
+    return { code: 6 };`;
   const sandbox = { console: { log() {}, error() {} } };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
-  vm.runInContext(`(function(){${body}\n})()`, sandbox, { filename: 'client-engine.js' });
+  sandbox.__plugin__ = vm.runInContext(`(function(){${body}\n})()`, sandbox, { filename: 'client-engine.js' });
   return sandbox;
 }
 
@@ -153,11 +155,13 @@ test('用例10: 客户端源码只装饰真实正文, 不含演示面板/模拟�
   assert.ok(!/hg-panel/.test(source), '不应再注册演示面板');
   assert.ok(!/simulate|模拟光标/.test(source), '不应再有模拟光标控件');
 
-  // 悬停引擎的必要组成: 区域锚点 + 光标取字 + 浮层
-  assert.ok(source.includes('data-hg-zone'), '缺少会话正文区域锚点');
+  // 悬停引擎的必要组成: 取字 + 浮层 + 自检; 且不依赖任何锚点元素
   assert.ok(/caretRangeFromPoint|caretPositionFromPoint/.test(source), '缺少光标处字符定位');
   assert.ok(/shell\.overlay/.test(source), '浮层应注册在 shell.overlay');
-  assert.ok(source.includes('conversation.chat.turnTail'), '应在每轮尾部放置区域锚点');
+  assert.ok(/function selfCheck/.test(source), '应带启动自检');
+  assert.ok(source.includes('__hoverGlossaryDiag__'), '自检结果应可从控制台读取');
+  assert.ok(!source.includes('data-hg-zone'), '不应再依赖锚点元素判定范围');
+  assert.ok(!source.includes('conversation.chat.turnTail'), '不应再与 turnTail chain 竞争');
   assert.ok(/addEventListener\('mousemove'/.test(source), '应监听鼠标移动');
   assert.ok(!/\bdocument\.body\s*\.\s*(append|innerHTML|style)/.test(source), '不应改写 product DOM');
 
@@ -223,5 +227,110 @@ test('用例11: 真实对话文本下 Host 与 Client 逐光标一致', () => {
   assert.ok(hits >= 10, `真实对话文本中命中太少 (${hits})`);
   // 未被收录的词不产生任何浮层
   assert.equal(sandbox.__index__.lookup('这句话里没有收录的词').length, 0);
+});
+
+/**
+ * 在沙箱里把 Client 半真正 apply 起来, 用假 DOM 模拟一次鼠标移动。
+ * 这是唯一能覆盖 "鼠标经过 -> 取字 -> 分类 -> 查询" 整条路径的测试;
+ * 之前 "悬停没反应" 的缺陷正是出现在这段路径上。
+ */
+function runHoverOnce(options) {
+  const listeners = { mousemove: [], mouseleave: [] };
+  const doc = {
+    addEventListener(type, fn) {
+      if (listeners[type]) listeners[type].push(fn);
+    },
+    removeEventListener(type, fn) {
+      if (listeners[type]) listeners[type] = listeners[type].filter((f) => f !== fn);
+    },
+    elementFromPoint: () => options.element,
+    caretRangeFromPoint: () => ({ startContainer: options.node, startOffset: options.offset }),
+    body: {},
+    documentElement: {},
+  };
+  const calls = [];
+  const logs = [];
+  const slots = {
+    inject: () => () => {},
+    register: (options2, render) => {
+      void render;
+      return () => {};
+    },
+  };
+  const sandbox = {
+    console: { log: (...a) => logs.push(a.join(' ')), error: (...a) => logs.push('ERR ' + a.join(' ')) },
+    document: doc,
+    navigator: { userAgent: 'fake' },
+    innerWidth: 1200,
+    innerHeight: 800,
+    React: {
+      createElement: (type, props, ...children) => ({ type, props, children }),
+      useState: (initial) => [initial, () => {}],
+      useEffect: () => {},
+    },
+    styles: { insert: () => () => {} },
+    host: {
+      call: (method, args) => {
+        calls.push({ method, args });
+        return Promise.resolve({ ok: true, entries: [{ index: 1, text: options.entryText, kind: '缩写' }] });
+      },
+    },
+    ctx: {
+      get: (name) => (name === 'slots' ? slots : undefined),
+      effect: () => () => {},
+      timer: { throttle: (fn) => fn, debounce: (fn) => fn },
+      timeouts: [],
+    },
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  const plugin = vm.runInContext(`(function(){${define.code.client}})()`, sandbox, { filename: 'client-run.js' });
+  plugin.apply(sandbox.ctx);
+
+  assert.ok(listeners.mousemove.length >= 1, '应注册 mousemove 监听');
+  for (const fn of listeners.mousemove) fn({ clientX: 100, clientY: 100 });
+  return { calls, listeners, logs };
+}
+
+test('用例12: 鼠标经过正文里的词会发起查询 (整条悬停路径)', async () => {
+  // 索引: u0 s1 e2 ␣3 W4 H5 O6 ␣7 h8 e9 r10 e11
+  const node = { nodeType: 3, data: 'use WHO here' };
+
+  // caret 落在所见字符右侧 (offset 7 = "WHO" 之后的空格): 必须向左回退一格取到 O
+  const rightSide = runHoverOnce({ element: { tagName: 'SPAN' }, node, offset: 7, entryText: '世卫组织' });
+  assert.equal(rightSide.calls.length, 1, '应发起一次 glossary/resolve');
+  assert.equal(rightSide.calls[0].method, 'glossary/resolve');
+  assert.equal(rightSide.calls[0].args.term, 'WHO');
+  assert.equal(rightSide.calls[0].args.text, node.data);
+  assert.equal(rightSide.calls[0].args.cursor, 6, 'offset 落在空格上时应回退到 6');
+
+  // offset 正落在 "WHO" 的中间 (caret 在 H 与 O 之间, 取左侧的 H)
+  const onChar = runHoverOnce({ element: { tagName: 'SPAN' }, node, offset: 6, entryText: '世卫组织' });
+  assert.equal(onChar.calls.length, 1);
+  assert.equal(onChar.calls[0].args.term, 'WHO');
+  assert.equal(onChar.calls[0].args.cursor, 5);
+
+  // offset 落在 "WHO" 的首字母 W 上
+  const onFirst = runHoverOnce({ element: { tagName: 'SPAN' }, node, offset: 4, entryText: '世卫组织' });
+  assert.equal(onFirst.calls.length, 1);
+  assert.equal(onFirst.calls[0].args.term, 'WHO');
+  assert.equal(onFirst.calls[0].args.cursor, 4);
+
+  // 未收录的词: 不应该发起查询
+  const none = runHoverOnce({ element: { tagName: 'SPAN' }, node, offset: 9, entryText: 'x' });
+  assert.equal(none.calls.length, 0, '未收录的词不应发起查询');
+
+  // 落在控件内: 不应该发起查询
+  const insideButton = runHoverOnce({
+    element: { tagName: 'BUTTON', parentElement: null },
+    node,
+    offset: 6,
+    entryText: '世卫组织',
+  });
+  assert.equal(insideButton.calls.length, 0, '控件内不应发起查询');
+
+  // 取字返回 null: 不应崩, 不发起查询
+  const blank = runHoverOnce({ element: null, node, offset: 6, entryText: '世卫组织' });
+  assert.equal(blank.calls.length, 0);
 });
 
