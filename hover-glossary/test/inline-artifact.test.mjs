@@ -79,4 +79,77 @@ test('用例7: 产物与构建脚本的输出保持同步 (未过期)', () => {
   const expected = buildInlineSource();
   const actual = readFileSync(resolve(root, 'plugin/client-inline.js'), 'utf8');
   assert.equal(actual, expected, 'plugin/client-inline.js 已过期, 请运行 node scripts/build-client.mjs');
+
+  // 两套产物必须来自同一份内联源码, 否则动态版与持久版会漂移
+  const bundle = readFileSync(resolve(root, 'plugin/package/lib/client.js'), 'utf8');
+  const defineJson = JSON.parse(readFileSync(resolve(root, 'plugin/cordis-define.json'), 'utf8'));
+  assert.equal(defineJson.code.client, bundle, 'plugin/package/lib/client.js 与 cordis-define.json 的 client 不一致');
+  assert.ok(bundle.includes(expected), 'profile 包未包含内联词库');
 });
+
+/**
+ * 在沙箱里以浏览器语义加载 profile 包的 client bundle:
+ * 提供 window.__ModuleLoader__ 与 require 桩, 取回 factory。
+ */
+function loadBrowserModule() {
+  const bundle = readFileSync(resolve(root, 'plugin/package/lib/client.js'), 'utf8');
+  let captured = null;
+  const sandbox = { console: { log() {}, error() {} }, Date, setTimeout, clearTimeout, globalThis: undefined };
+  sandbox.window = sandbox;
+  sandbox.__ModuleLoader__ = {
+    load(definition) {
+      captured = definition;
+    },
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(bundle, sandbox, { filename: 'hover-glossary-client.js' });
+  return { definition: captured, sandbox };
+}
+
+test('用例13: profile 包是合法的客户端插件包 (可持久安装的前提)', () => {
+  const manifest = JSON.parse(readFileSync(resolve(root, 'plugin/package/package.json'), 'utf8'));
+  // 契约: 本地包靠 dsh.client.platform 声明自己是浏览器插件, 否则加载器不会挂载
+  assert.equal(manifest.dsh.client.platform, 'web');
+  assert.equal(manifest.type, 'module');
+  assert.ok(manifest.exports['./client'], '应导出 ./client');
+
+  // host 半边必须是可被 Node 加载的 ESM, 且只导出 apply
+  const hostEntry = readFileSync(resolve(root, 'plugin/package/lib/index.js'), 'utf8');
+  assert.ok(/export\s*\{\s*apply\s*\}/.test(hostEntry), 'host 半边应导出 apply');
+  assert.ok(!/^\s*import\s/m.test(hostEntry), 'host 半边不需要 import');
+
+  // client bundle 必须以模块加载器契约注册, 且 id 等于包名
+  const { definition } = loadBrowserModule();
+  assert.ok(definition, 'bundle 未调用 __ModuleLoader__.load');
+  assert.equal(definition.id, manifest.name, 'id 必须等于 package.json 的 name');
+  assert.equal(typeof definition.factory, 'function');
+
+  // factory 返回 { apply, inject }, 且因为纯客户端, inject 必须为空
+  const reactStub = {
+    createElement: () => ({}),
+    useState: (initial) => [initial, () => {}],
+    useEffect: () => {},
+  };
+  const requireStub = (name) => {
+    if (name === 'react') return reactStub;
+    throw new Error('不允许的 require: ' + name);
+  };
+  const mod = definition.factory(requireStub);
+  const plugin = mod && mod.default ? mod.default : mod;
+  assert.equal(typeof plugin.apply, 'function', 'factory 应导出 apply');
+  // 跨 realm 的空数组不能用 deepEqual 比较 (原型不同), 因此比序列化结果
+  assert.equal(JSON.stringify(plugin.inject), '[]', '纯客户端插件不应注入任何服务');
+
+  // 内联词库在浏览器侧独立可用: 不再依赖任何 RPC
+  const record = readFileSync(resolve(root, 'plugin/package/lib/client.js'), 'utf8');
+  [
+    'host.call',
+    "require('host')",
+    'harness',
+    'ctx.remote',
+  ].forEach((forbidden) => {
+    assert.ok(!record.includes(forbidden), `持久版本不应依赖 ${forbidden}`);
+  });
+});
+

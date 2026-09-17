@@ -1,12 +1,15 @@
 /**
  * hover-glossary / scripts/build-client.mjs
  *
- * Cordis 的客户端代码是纯 JavaScript 函数体, 不允许 import/require。
- * 本脚本把 src/lexicon.mjs 与 src/seed-data.mjs 的实现内联成一段可直接嵌入
- * Client 闭包的源码, 输出到 plugin/client-inline.js。
+ * 从 src/ 的单一实现生成两套产物:
  *
- * 这样 "词库数据结构" 只有一份实现: 测试跑 src/, 插件用内联副本,
- * 并由 build 的产物校验保证两者不会漂移。
+ * 1. plugin/cordis-define.json —— 动态插件 (进程内, 重启消失) 的 { host, client } 函数体。
+ * 2. plugin/package/ —— 可持久安装的 profile 包:
+ *      package.json      声明 dsh.client.platform=web
+ *      lib/index.js      host 半边: 空 apply (纯客户端能力)
+ *      lib/client.js     browser module: window.__ModuleLoader__.load({ id, factory })
+ *
+ * 之所以能纯客户端: 词库内联在浏览器侧, 不需要 RPC, 也不依赖会话级服务。
  *
  * 运行: node scripts/build-client.mjs
  */
@@ -16,8 +19,10 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
+const PKG_NAME = 'hover-glossary';
+const PKG_VERSION = '1.0.0';
 
-/** 去掉 JSDoc 块注释 (其中可能含有 `import` 字样, 会干扰闭包解析) */
+/** 去掉 JSDoc 块注释 (其中可能含有 import 字样, 会干扰闭包解析) */
 function stripDocs(source) {
   return source.replace(/\/\*\*[\s\S]*?\*\//g, '');
 }
@@ -27,17 +32,11 @@ function stripExports(source) {
   return source.replace(/^export\s+(?=(class|function|const|let|var)\b)/gm, '');
 }
 
-/**
- * @param {string} relPath
- * @param {{keepHeader?:boolean}} [opts]
- */
-function loadInline(relPath, opts = {}) {
+/** @param {string} relPath */
+function loadInline(relPath) {
   let code = readFileSync(resolve(root, relPath), 'utf8');
   code = stripDocs(code);
-  if (!opts.keepHeader) {
-    // 去掉文件顶部的说明注释块
-    code = code.replace(/^\/\*[\s\S]*?\*\/\s*/, '');
-  }
+  code = code.replace(/^\/\*[\s\S]*?\*\/\s*/, '');
   code = stripExports(code);
   return code.trim();
 }
@@ -57,20 +56,21 @@ ${seedCode}
 `;
 }
 
+const INLINE_MARKER =
+  /\/\* =+ 内联区开始[^*]*\*\/\n[ \t]*\/\*__INLINE_SOURCE__\*\/\n[ \t]*\/\* =+ 内联区结束 =+ \*\//;
+
 /**
- * 把某个半边的模板替换成含内联副本的成品源码。
- * 模板里用下面的标记包住占位符, 替换时整块保留标记, 只换占位符内容。
+ * 把模板里的内联占位符替换成 src/ 的副本。
  * @param {string} relPath
  * @returns {string}
  */
-export function composeHalf(relPath) {
+export function composeTemplate(relPath) {
   const template = readFileSync(resolve(root, relPath), 'utf8');
-  const marker = /\/\* =+ 内联区开始[^*]*\*\/\n\/\*__INLINE_SOURCE__\*\/\n\/\* =+ 内联区结束 =+ \*\//;
-  if (!marker.test(template)) {
-    throw new Error(`${relPath} 缺少内联区占位标记`);
-  }
-  const composed = template.replace(marker, `/* ===== 内联区开始 (由 build-client.mjs 从 src/ 生成) ===== */\n${buildInlineSource()}\n/* ===== 内联区结束 ===== */`);
-  // 只检查内联区内部: 文件头注释里可能本来就提到过占位符名字
+  if (!INLINE_MARKER.test(template)) throw new Error(`${relPath} 缺少内联区占位标记`);
+  const composed = template.replace(
+    INLINE_MARKER,
+    `/* ===== 内联区开始 (由 build-client.mjs 从 src/ 生成) ===== */\n${buildInlineSource()}\n/* ===== 内联区结束 ===== */`,
+  );
   const start = composed.indexOf('内联区开始');
   const end = composed.indexOf('内联区结束', start);
   if (start < 0 || end < 0 || composed.slice(start, end).includes('__INLINE_SOURCE__')) {
@@ -80,39 +80,97 @@ export function composeHalf(relPath) {
 }
 
 /**
- * 校验一段动态插件源码是合法的函数体, 且不含 ESM 语法。
+ * 校验一段源码是合法的函数体 (new Function 只做语法检查, 不执行)。
  * @param {string} source
  * @param {string} label
  */
-export function assertPlainFunctionBody(source, label) {
-  if (/^\s*(import|export)\s/m.test(source)) throw new Error(`${label}: 不应包含 import/export`);
-  if (/\brequire\s*\(/.test(source)) throw new Error(`${label}: 不应包含 require`);
-  // new Function 只做语法检查, 不执行
-  // eslint-disable-next-line no-new-func
-  new Function(source);
+export function assertParses(source, label) {
+  try {
+    // eslint-disable-next-line no-new-func
+    new Function(source);
+  } catch (error) {
+    throw new Error(`${label} 语法检查失败: ${error.message}`);
+  }
   return true;
+}
+
+/** 动态插件版本的 host 半边 (harness.handle RPC, 仅供进程内使用) */
+function buildDynamicHostSource() {
+  const composed = composeTemplate('plugin/host-service.js');
+  if (/^\s*(import|export)\s/m.test(composed)) throw new Error('host 半边不应包含 import/export');
+  assertParses(composed, 'dynamic host');
+  return composed;
+}
+
+/** 静态 profile 包的 host 半边: 纯客户端能力, host 侧无事可做 */
+export function buildPackageHostSource() {
+  return [
+    '// hover-glossary profile package: host loader entry.',
+    '// 本插件是纯浏览器侧能力 (词库内联在 client bundle 里), host 侧不提供任何服务。',
+    'function apply() {}',
+    'export { apply };',
+    '',
+  ].join('\n');
+}
+
+/** 静态 profile 包的 package.json */
+export function buildPackageManifest() {
+  return (
+    JSON.stringify(
+      {
+        name: PKG_NAME,
+        version: PKG_VERSION,
+        private: true,
+        description: 'DSH 客户端插件: 光标停在对话正文的词上, 显示该词的 1..N 条联想',
+        type: 'module',
+        main: 'lib/index.js',
+        exports: {
+          '.': './lib/index.js',
+          './client': './lib/client.js',
+          './package.json': './package.json',
+        },
+        dsh: { client: { platform: 'web' } },
+        license: 'MIT',
+      },
+      null,
+      2,
+    ) + '\n'
+  );
 }
 
 const out = buildInlineSource();
 
 mkdirSync(resolve(root, 'plugin'), { recursive: true });
-const target = resolve(root, 'plugin/client-inline.js');
-writeFileSync(target, out, 'utf8');
+writeFileSync(resolve(root, 'plugin/client-inline.js'), out, 'utf8');
 
-const hostSource = composeHalf('plugin/host-service.js');
-const clientSource = composeHalf('plugin/client-panel.js');
-assertPlainFunctionBody(hostSource, 'host-service.js');
-assertPlainFunctionBody(clientSource, 'client-panel.js');
+// ---- 产物 1: 动态插件 ----
+const dynamicHost = buildDynamicHostSource();
+const browserModule = composeTemplate('plugin/client-panel.js');
+assertParses(browserModule, 'browser module');
 
-// 交给 cordis_define 的成品: 只含两个函数体字符串
-const define = {
-  name: 'Hover Glossary',
-  purpose: '光标悬停在预置词上时显示该词的 1..N 条联想释义',
-  code: { host: hostSource, client: clientSource },
-};
-writeFileSync(resolve(root, 'plugin/cordis-define.json'), JSON.stringify(define, null, 2), 'utf8');
+writeFileSync(
+  resolve(root, 'plugin/cordis-define.json'),
+  JSON.stringify(
+    {
+      name: 'Hover Glossary',
+      purpose: '光标悬停在对话正文的词上时显示该词的 1..N 条联想释义',
+      code: { host: dynamicHost, client: browserModule },
+    },
+    null,
+    2,
+  ),
+  'utf8',
+);
+
+// ---- 产物 2: 可持久安装的 profile 包 ----
+const pkgRoot = resolve(root, 'plugin/package');
+mkdirSync(resolve(pkgRoot, 'lib'), { recursive: true });
+writeFileSync(resolve(pkgRoot, 'package.json'), buildPackageManifest(), 'utf8');
+writeFileSync(resolve(pkgRoot, 'lib/index.js'), buildPackageHostSource(), 'utf8');
+writeFileSync(resolve(pkgRoot, 'lib/client.js'), browserModule, 'utf8');
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  console.log(`[build-client] wrote ${target} (${out.length} chars)`);
-  console.log(`[build-client] wrote plugin/cordis-define.json (host ${hostSource.length} / client ${clientSource.length} chars)`);
+  console.log(`[build] plugin/client-inline.js (${out.length} chars)`);
+  console.log(`[build] plugin/cordis-define.json (host ${dynamicHost.length} / client ${browserModule.length})`);
+  console.log('[build] plugin/package/ (package.json + lib/index.js + lib/client.js)');
 }
