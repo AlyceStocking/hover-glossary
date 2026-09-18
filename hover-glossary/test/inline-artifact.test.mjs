@@ -18,7 +18,7 @@ import vm from 'node:vm';
 
 import { createLexicon } from '../src/lexicon.mjs';
 import { SEED_TABLE } from '../src/seed-data.mjs';
-import { buildInlineSource } from '../scripts/build-client.mjs';
+import { buildInlineSource, composeTemplate, buildPackageManifest, buildPackageHostSource } from '../scripts/build-client.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -85,6 +85,9 @@ test('用例7: 产物与构建脚本的输出保持同步 (未过期)', () => {
   const defineJson = JSON.parse(readFileSync(resolve(root, 'plugin/cordis-define.json'), 'utf8'));
   assert.equal(defineJson.code.client, bundle, 'plugin/package/lib/client.js 与 cordis-define.json 的 client 不一致');
   assert.ok(bundle.includes(expected), 'profile 包未包含内联词库');
+  assert.equal(bundle, composeTemplate('plugin/client-panel.js'), '客户端模板改动后必须重新构建');
+  assert.equal(readFileSync(resolve(root, 'plugin/package/package.json'), 'utf8'), buildPackageManifest());
+  assert.equal(readFileSync(resolve(root, 'plugin/package/lib/index.js'), 'utf8'), buildPackageHostSource());
 });
 
 /**
@@ -125,7 +128,7 @@ test('用例13: profile 包是合法的客户端插件包 (可持久安装的前
   assert.equal(definition.id, manifest.name, 'id 必须等于 package.json 的 name');
   assert.equal(typeof definition.factory, 'function');
 
-  // factory 返回 { apply, inject }, 且因为纯客户端, inject 必须为空
+  // factory 返回 Cordis 对象插件; 纯客户端仍须声明客户端服务依赖。
   const reactStub = {
     createElement: () => ({}),
     useState: (initial) => [initial, () => {}],
@@ -138,15 +141,13 @@ test('用例13: profile 包是合法的客户端插件包 (可持久安装的前
   const mod = definition.factory(requireStub);
   const plugin = mod && mod.default ? mod.default : mod;
   assert.equal(typeof plugin.apply, 'function', 'factory 应导出 apply');
-  // 导出的 inject 是宿主加载器用的运行时依赖列表; 这里的插件不注入会话级服务,
-  // 它需要的 slots 由 package.json 的 dsh.client.inject 声明 (见下)
-  assert.equal(JSON.stringify(plugin.inject), '[]', '不应注入会话级服务');
+  assert.equal(JSON.stringify(plugin.inject), '["slots"]', '必须声明 Cordis slots 服务');
 
   // 关键契约: 必须声明 slots 依赖, 否则 ctx.slots 解析不到, 插件会静默失效。
   // 这正是线上第一次 "完全没反应" 的原因 (ctx.get('slots') 返回 undefined)。
   assert.equal(
     JSON.stringify(manifest.dsh.client.inject),
-    JSON.stringify(['@deepseek-ai/dsh-client-ui-slots']),
+    JSON.stringify(['@deepseek-ai/dsh-client-ui-renderer']),
     'package.json 必须声明 slots 注入, 否则悬停字典在浏览器里不会注册任何东西',
   );
 
@@ -173,4 +174,3 @@ test('用例13: profile 包是合法的客户端插件包 (可持久安装的前
     assert.ok(!record.includes(forbidden), `持久版本不应依赖 ${forbidden}`);
   });
 });
-

@@ -1,60 +1,43 @@
-# hover-glossary
+# hover-glossary 开发说明
 
-DSH 动态 Cordis 插件：**把鼠标停在对话正文里的某个词上，就显示该词的 1..N 条联想（释义）。**
+可持久安装的浏览器插件：在用户与助手聊天正文中悬停，显示词语的多个释义。安装见[仓库首页](../README.md)，维护见[glossary-mapping skill](../.dsh/skills/glossary-mapping/SKILL.md)。
 
-正文既包括**你输入的内容**，也包括**我输出的内容**。没有额外面板，词库的维护也不出现在 GUI 里。
+## 源码与构建
 
-示例：光标停在 `WHO` 上 → 浮出
+- `src/seed-data.mjs`：唯一持久词库，词 → 条目数组。
+- `src/lexicon.mjs`：`Map<normalizedKey, Entry[]>`、归一化、光标处最长匹配。
+- `plugin/client-panel.js`：浏览器模块模板，字符几何命中、聊天范围、浮层与监听器生命周期。
+- `scripts/build-client.mjs`：生成内联副本与 `plugin/package/`。导入构建函数不会修改产物。
+- `plugin/host-service.js`、`plugin/cordis-define.json`：保留的旧实验产物；当前安装与查询不使用它们。
 
-```
-WHO            2 条
-1. 世卫组织     缩写
-2. 谁           代词
-```
-
-## 它做什么
-
-- 鼠标移动时用 `document.elementFromPoint` + `caretRangeFromPoint` 取到光标下的字符，
-  截出所在的词（中英混排都能工作：拉丁词连续读取，汉字按多字词最长匹配切分）。
-- 词在词库里 → 用 `host.call('glossary/resolve')` 向 Host 查询，在光标旁浮出编号条目。
-- 词不在词库 → 不显示任何东西。
-- 判定范围限于会话正文：每轮对话尾部与输入区各放一个不可见锚点，只有锚点内部的字符会被查询，
-  侧边栏、设置页等区域不会触发。
-
-## 文件结构
-
-```
-src/lexicon.mjs          词语 -> 1..N 条目的数据结构与光标查询算法 (唯一实现)
-src/seed-data.mjs        预置词库 (映射只在这里维护, 不进 GUI)
-test/lexicon.test.mjs    用例 1-5: 数据结构、最长匹配、归一化、光标定位、真实正文链路
-test/inline-artifact.test.mjs  用例 6-7: 客户端内联副本与 src/ 一致、产物未过期
-test/plugin-source.test.mjs    用例 8-11: 源码合法性、Host RPC、只装饰正文、Host/Client 一致
-scripts/build-client.mjs 把 src/ 内联进两半源码, 产出 plugin/cordis-define.json
-plugin/host-service.js   Host 半模板: harness.handle 提供词库 RPC
-plugin/client-panel.js   Client 半模板: 悬停引擎 + 浮层
-plugin/cordis-define.json 成品: 交给 cordis_define 的 { host, client } 函数体
+```powershell
+node scripts/build-client.mjs
+node test/run.mjs
 ```
 
-## 数据结构
+测试不会自动重建产物，因此能发现忘记构建的改动。
 
-`Map<规范化键, Entry[]>` —— 一个词显式对应 N 个条目，条目带 `index / text / kind / weight`，
-按 `weight` 降序稳定排序后重新编号，因此 UI 上的 `1、2、3` 顺序与数据顺序永远一致。
-另有 `Map<键长度, Set<键>>` 长度分桶，让查询从最长候选往下试探（最长词优先）。
+## 两种依赖声明
 
-归一化负责把 `who` / `Who` / `ＷＨＯ` / `(WHO)` / `WHO.` 收敛到同一个键。
+`package.json` 的 `dsh.client.inject` 是模块图依赖，指向提供运行时服务的 `@deepseek-ai/dsh-client-ui-renderer`。
+浏览器 factory 导出的 `inject = ['slots']` 才是 Cordis 服务依赖声明，允许 `apply(ctx)` 访问 `ctx.slots`。
+缺失后者会出现 `cannot get property "slots" without inject`。纯前端插件同样需要声明客户端服务依赖。
 
-## 开发
+浮层等待 `shell.overlay` 声明后注册；CSS 用 React `<style>` 管理，没有 `styles` 全局。卸载时移除鼠标、滚动和失焦监听器。
 
-```bash
-node test/run.mjs          # 全部用例 (11 个)
-node scripts/build-client.mjs   # 改动 src/ 后重新生成 plugin/cordis-define.json
+依据：[服务依赖](https://deepseek-harness.github.io/deepseek-harness/en/develop/framework/service)、[Slot 生命周期](https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/slots)、[Web Client 加载链](https://deepseek-harness.github.io/deepseek-harness/en/reference/subsystems/web-client)。
+
+## 真实浏览器验证
+
+需要已安装的 Playwright、Edge 和运行中的 Harness：
+
+```powershell
+$env:DSH_TEST_LOG = '<Harness 启动日志路径>'
+# 或设置 DSH_TEST_URL 为启动时打印的认证 URL；测试不会输出该 URL。
+$env:PLAYWRIGHT_MODULE = '<playwright/index.mjs 的绝对路径>'
+node test/browser.mjs
 ```
 
-沙箱禁止 `node --test` 启动子进程（spawn EPERM），所以 `test/run.mjs` 用动态 import
-在同一个进程里加载各测试文件。
+测试打开“DeepSeek 词联想插件开发”既有会话，验证原有助手消息的 WHO 浮层，再用临时 DOM 样本检查用户/助手两种区域的五个示例词、中文词、短语、排除区域、滚动和刷新。样本不会保存到会话或请求模型。可用 `DSH_TEST_SESSION` 指定另一个含 WHO 的会话。
 
-## 已知边界
-
-- CJK 没有分词边界：连续汉字整段视为一个 token，因此收录的多字词前应是一个边界
-  （空格、标点或行首）。写 `即 世卫组织` 能命中，写 `即世卫组织` 时 `即` 会占住词首。
-- 跨空格短语（`United Nations`）从第一个词开始命中；光标停在第二个词上时按该词自身查询。
+持久化验证须另外重启 Harness 进程后再运行浏览器测试；只确认服务端发出 bundle 不能证明插件能激活。

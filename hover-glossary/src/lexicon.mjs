@@ -282,6 +282,11 @@ export class Lexicon {
     for (const candidate of candidates) {
       const list = this.entries.get(candidate.key);
       if (list && list.length > 0) {
+        // 拉丁词必须完整匹配: WHO 不应命中 WHOLE, API 不应命中 RAPID。
+        // 汉字没有这种边界, 仍允许在连续正文中寻找已登记的多字词。
+        const latin = /[\p{Script=Latin}\p{N}_]/u;
+        if (latin.test(text[candidate.start]) && candidate.start > 0 && latin.test(text[candidate.start - 1])) continue;
+        if (latin.test(text[candidate.end - 1]) && candidate.end < text.length && latin.test(text[candidate.end])) continue;
         return {
           term: text.slice(candidate.start, candidate.end),
           key: candidate.key,

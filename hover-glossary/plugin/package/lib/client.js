@@ -7,7 +7,7 @@
  *   factory(require) 内 require 只解析包名/平台原语, 不支持相对路径 -> 逻辑必须内联。
  *
  * 纯客户端: 词库内联在浏览器侧, 不需要 host 半边、不需要 RPC、不依赖任何会话级
- * 服务 (inject 为空), 因此进程重启后依然生效。
+ * 服务; 仅通过 inject 声明客户端 slots 服务。profile 安装使其重启后依然生效。
  *
  * "__INLINE_SOURCE__" 占位符由 scripts/build-client.mjs 替换为 src/ 的内联副本。
  */
@@ -240,6 +240,11 @@ class Lexicon {
     for (const candidate of candidates) {
       const list = this.entries.get(candidate.key);
       if (list && list.length > 0) {
+        // 拉丁词必须完整匹配: WHO 不应命中 WHOLE, API 不应命中 RAPID。
+        // 汉字没有这种边界, 仍允许在连续正文中寻找已登记的多字词。
+        const latin = /[\p{Script=Latin}\p{N}_]/u;
+        if (latin.test(text[candidate.start]) && candidate.start > 0 && latin.test(text[candidate.start - 1])) continue;
+        if (latin.test(text[candidate.end - 1]) && candidate.end < text.length && latin.test(text[candidate.end])) continue;
         return {
           term: text.slice(candidate.start, candidate.end),
           key: candidate.key,
@@ -341,7 +346,7 @@ const SEED_TABLE = {
     const INDEX = createLexicon(SEED_TABLE);
 
     const CSS = [
-      '.hg-tip{position:fixed;z-index:2147483000;max-width:380px;pointer-events:none;',
+      '.hg-tip{position:fixed;z-index:2147483000;max-width:min(380px,calc(100vw - 24px));pointer-events:none;box-sizing:border-box;',
       'padding:6px 10px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);',
       'background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);',
       'box-shadow:0 6px 24px rgba(0,0,0,.28);font-size:12px;line-height:1.6;}',
@@ -351,29 +356,10 @@ const SEED_TABLE = {
       '.hg-tip ol{margin:0;padding-left:18px;}',
       '.hg-tip li{margin:1px 0;}',
       '.hg-tip .hg-tip-kind{color:var(--dsw-alias-label-secondary);font-size:11px;margin-left:6px;}',
-      '.hg-diag{position:fixed;right:14px;bottom:14px;z-index:2147483000;max-width:460px;pointer-events:auto;',
-      'padding:8px 10px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2);',
-      'background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);',
-      'box-shadow:0 6px 24px rgba(0,0,0,.28);font-size:11px;line-height:1.5;}',
-      '.hg-diag pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-all;font-size:11px;}',
-      '.hg-diag .hg-diag-head{display:flex;align-items:center;gap:8px;}',
-      '.hg-diag button{all:unset;cursor:pointer;padding:0 6px;border:1px solid var(--dsw-alias-border-l2);',
-      'border-radius:4px;color:var(--dsw-alias-label-secondary);}',
-      '.hg-ok{color:var(--dsw-alias-state-success-primary);}',
-      '.hg-bad{color:var(--dsw-alias-state-error-primary);}',
     ].join('');
 
     const hoverStore = {
       state: { visible: false, term: '', entries: [], x: 0, y: 0 },
-      listeners: new Set(),
-      publish(next) {
-        this.state = next;
-        for (const listener of this.listeners) listener(next);
-      },
-    };
-
-    const diagStore = {
-      state: null,
       listeners: new Set(),
       publish(next) {
         this.state = next;
@@ -422,8 +408,16 @@ const SEED_TABLE = {
       const candidates = [];
       if (offset > 0 && isWordChar(data[offset - 1])) candidates.push(offset - 1);
       if (offset < data.length && isWordChar(data[offset])) candidates.push(offset);
-      if (candidates.length === 0) return null;
-      return { text: data, at: candidates[0], element };
+      for (const at of candidates) {
+        // caret API 会把行尾空白也吸附到最近文字; 验证指针确实落在字符矩形内。
+        const glyph = doc.createRange();
+        glyph.setStart(node, at);
+        glyph.setEnd(node, at + 1);
+        if (Array.from(glyph.getClientRects()).some(r => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom)) {
+          return { text: data, at, element: node.parentElement || element };
+        }
+      }
+      return null;
     }
 
     /** 从命中元素向上走, 判断能否查询, 并记录原因 */
@@ -431,6 +425,7 @@ const SEED_TABLE = {
       if (!element) return { ok: false, reason: 'no-element', chain: [] };
       const chain = [];
       let current = element;
+      let inConversation = false;
       while (current && current !== BROWSER.doc.body && current !== BROWSER.doc.documentElement) {
         const tag = typeof current.tagName === 'string' ? current.tagName.toLowerCase() : '?';
         let cls = '';
@@ -439,12 +434,14 @@ const SEED_TABLE = {
         } catch (error) {
           cls = '';
         }
-        chain.push(tag + (cls ? '.' + cls.split(' ').filter(Boolean).slice(0, 2).join('.') : ''));
-        if (chain.length >= 6) break;
+        if (chain.length < 6) chain.push(tag + (cls ? '.' + cls.split(' ').filter(Boolean).slice(0, 2).join('.') : ''));
         if (INTERACTIVE[tag]) return { ok: false, reason: 'inside-' + tag, chain };
+        if (current.getAttribute && current.getAttribute('contenteditable') === 'true') return { ok: false, reason: 'editable', chain };
+        const kind = current.getAttribute && current.getAttribute('data-chat-flow-kind');
+        if (kind === 'user' || kind === 'assistant-step' || kind === 'steering') inConversation = true;
         current = current.parentElement;
       }
-      return { ok: true, reason: 'text', chain };
+      return { ok: inConversation, reason: inConversation ? 'conversation' : 'outside-conversation', chain };
     }
 
     /** 启动自检 */
@@ -469,7 +466,6 @@ const SEED_TABLE = {
           trace.inLexicon = token ? INDEX.has(normalize(token.term)) : false;
         }
       }
-      diagStore.publish(trace);
       if (typeof globalThis !== 'undefined') globalThis.__hoverGlossaryDiag__ = trace;
       console.log('[hover-glossary] 自检 ' + JSON.stringify(trace));
       return trace;
@@ -484,7 +480,12 @@ const SEED_TABLE = {
       }, []);
       if (!state.visible) return null;
       const width = BROWSER ? BROWSER.root.innerWidth : 1200;
-      const style = { left: Math.min(state.x + 14, width - 400) + 'px', top: state.y + 18 + 'px' };
+      const height = BROWSER ? BROWSER.root.innerHeight : 800;
+      const below = state.y < height / 2;
+      const style = { left: Math.max(12, Math.min(state.x + 14, width - 392)) + 'px',
+        top: below ? state.y + 18 + 'px' : undefined,
+        bottom: below ? undefined : height - state.y + 12 + 'px',
+        maxHeight: Math.max(40, (below ? height - state.y - 30 : state.y - 24)) + 'px', overflow: 'auto' };
       const head = React.createElement(
         'div',
         { className: 'hg-tip-head' },
@@ -503,62 +504,18 @@ const SEED_TABLE = {
           ),
         ),
       );
-      return React.createElement('div', { className: 'hg-tip', style: style }, head, body);
-    }
-
-    /**
-     * 诊断卡片: 只在需要时出现, 正常情况静默自动消失,
-     * 免得持久安装的插件在界面上长期占一块区域。
-     */
-    function DiagCard() {
-      const [trace, setTrace] = React.useState(diagStore.state);
-      React.useEffect(() => {
-        const listener = (next) => setTrace(next);
-        diagStore.listeners.add(listener);
-        return () => diagStore.listeners.delete(listener);
-      }, []);
-      React.useEffect(() => {
-        if (!trace) return undefined;
-        const timer = setTimeout(() => diagStore.publish(null), 12000);
-        return () => clearTimeout(timer);
-      }, [trace]);
-      if (!trace) return null;
-      const lines = Object.keys(trace).map((key) => key + ': ' + JSON.stringify(trace[key]));
-      return React.createElement(
-        'div',
-        { className: 'hg-diag' },
-        React.createElement(
-          'div',
-          { className: 'hg-diag-head' },
-          React.createElement('strong', null, '悬停词典自检'),
-          React.createElement('span', { style: { flex: 1 } }),
-          React.createElement('button', { onClick: () => selfCheck() }, '重测'),
-          React.createElement('button', { onClick: () => diagStore.publish(null) }, '关闭'),
-        ),
-        React.createElement('pre', null, lines.join('\n')),
-      );
+      return React.createElement('div', { className: 'hg-tip', role: 'tooltip', style: style }, head, body);
     }
 
     function apply(ctx) {
-      // slots 是已声明的注入依赖 (见 package.json 的 dsh.client.inject), 因此用 ctx.slots。
-      // 不要退回可选取值写法: 它在服务未解析时会静默拿到 undefined,
-      // 让插件无声失效 —— 那正是之前最难查的一点。
+      // 模块图依赖在 package.json 中; 服务依赖由下面导出的 inject 声明。
       const slots = ctx.slots;
-      if (slots === undefined) {
-        console.error('slots 服务不可用: 悬停词典未注册 (检查 dsh.client.inject 是否声明了 slots)');
-        return;
-      }
-      const disposeStyles = styles.insert(CSS);
-      ctx.effect(() => disposeStyles);
 
       slots.inject('shell.overlay', () =>
         slots.register({ name: 'shell.overlay', id: 'hover-glossary-tip', order: 200 }, () =>
-          React.createElement(GlossaryTip),
-        ),
-      );
-      slots.inject('shell.overlay', () =>
-        slots.register({ name: 'shell.overlay', id: 'hover-glossary-diag', order: 201 }, () =>
-          React.createElement(DiagCard),
+          React.createElement(React.Fragment, null,
+            React.createElement('style', { 'data-hover-glossary': '' }, CSS),
+            React.createElement(GlossaryTip)),
         ),
       );
 
@@ -569,12 +526,10 @@ const SEED_TABLE = {
 
       selfCheck();
 
-      let seq = 0;
       let shown = '';
       let last = 0;
 
       const hide = () => {
-        seq += 1;
         shown = '';
         if (hoverStore.state.visible) {
           hoverStore.publish({ visible: false, term: '', entries: [], x: 0, y: 0 });
@@ -599,13 +554,9 @@ const SEED_TABLE = {
           hide();
           return;
         }
-        const token = tokenAt(hit.text, hit.at);
-        if (!token) {
-          hide();
-          return;
-        }
-        const key = normalize(token.term);
-        if (!INDEX.has(key)) {
+        const match = INDEX.lookupAt(hit.text, hit.at);
+        const key = match.key;
+        if (match.entries.length === 0) {
           hide();
           return;
         }
@@ -614,27 +565,28 @@ const SEED_TABLE = {
           return;
         }
         shown = key;
-        seq += 1;
-        const reason = seq;
-        void reason;
-        hoverStore.publish({ visible: true, term: token.term, entries: INDEX.lookup(key), x, y });
+        hoverStore.publish({ visible: true, term: match.term, entries: match.entries, x, y });
       };
 
       const onLeave = () => hide();
 
       BROWSER.doc.addEventListener('mousemove', onMove, { passive: true });
       BROWSER.doc.addEventListener('mouseleave', onLeave, { passive: true });
+      BROWSER.doc.addEventListener('scroll', onLeave, true);
+      BROWSER.root.addEventListener('blur', onLeave);
       ctx.effect(() => () => {
         BROWSER.doc.removeEventListener('mousemove', onMove);
         BROWSER.doc.removeEventListener('mouseleave', onLeave);
+        BROWSER.doc.removeEventListener('scroll', onLeave, true);
+        BROWSER.root.removeEventListener('blur', onLeave);
         if (typeof globalThis !== 'undefined') delete globalThis.__hoverGlossaryDiag__;
         hoverStore.publish({ visible: false, term: '', entries: [], x: 0, y: 0 });
       });
     }
 
     exports.apply = apply;
-    // 不注入任何会话级服务: 整个能力都在浏览器侧
-    exports.inject = [];
+    // Cordis 的服务访问授权, 与 manifest 中的模块依赖不是同一个列表。
+    exports.inject = ['slots'];
     return module.exports;
   },
 });

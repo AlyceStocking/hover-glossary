@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "DSH 动态 Cordis 插件: 光标悬停在预置词上时显示该词的 1->N 联想条目",
+  "description": "DSH 持久客户端插件: 光标悬停在聊天正文预置词上时显示该词的 1->N 联想条目",
   "scripts": {
     "test": "node test/run.mjs",
+    "test:browser": "node test/browser.mjs",
     "build": "node scripts/build-client.mjs"
   },
   "engines": {

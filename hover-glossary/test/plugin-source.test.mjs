@@ -273,7 +273,10 @@ test('用例11: 真实对话文本下 Host 与 Client 逐光标一致', () => {
  * 浮层实际的渲染结果 (文本 + 条目), 而不是 "有没有发起查询"。
  */
 function runHoverOnce(options) {
-  const listeners = { mousemove: [], mouseleave: [] };
+  const listeners = { mousemove: [], mouseleave: [], scroll: [], blur: [] };
+  if (options.element && !options.outside) {
+    options.element.parentElement = { getAttribute: name => name === 'data-chat-flow-kind' ? 'user' : null };
+  }
   const doc = {
     addEventListener(type, fn) {
       if (listeners[type]) listeners[type].push(fn);
@@ -283,6 +286,7 @@ function runHoverOnce(options) {
     },
     elementFromPoint: () => options.element,
     caretRangeFromPoint: () => ({ startContainer: options.node, startOffset: options.offset }),
+    createRange: () => ({setStart() {}, setEnd() {}, getClientRects: () => options.blank ? [] : [{left: 90,right: 110,top:90,bottom:110}]}),
     body: {},
     documentElement: {},
   };
@@ -398,10 +402,11 @@ function runHoverOnce(options) {
     navigator: { userAgent: 'fake' },
     innerWidth: 1200,
     innerHeight: 800,
+    addEventListener: (type, fn) => listeners[type]?.push(fn),
+    removeEventListener: (type, fn) => { if (listeners[type]) listeners[type] = listeners[type].filter(f=>f!==fn); },
     Date,
     setTimeout,
     clearTimeout,
-    styles: { insert: () => () => {} },
     __ModuleLoader__: { load: (definition) => { captured = definition; } },
   };
   sandbox.window = sandbox;
@@ -414,12 +419,16 @@ function runHoverOnce(options) {
     if (name === 'react') return React;
     throw new Error('不允许的 require: ' + name);
   });
+  if (options.inject) plugin.inject = options.inject;
 
   // register 期只登记渲染函数, 不执行; apply 之后统一首渲。
   // ctx 只提供 ctx.slots (与真实运行时一致), 刻意不提供 ctx.get('slots') ——
   // 这样 "依赖没声明导致静默失效" 这类问题会在测试里直接暴露。
   plugin.apply({
-    slots,
+    get slots() {
+      assert.ok(plugin.inject.includes('slots'), 'cannot get property "slots" without inject');
+      return slots;
+    },
     effect: (effect) => {
       const cleanup = effect();
       if (typeof cleanup === 'function') pendingCleanups.push(cleanup);
@@ -515,8 +524,40 @@ test('用例12: 鼠标经过正文里的词会渲染出联想浮层 (整条悬�
   assert.equal(tipText(blank), null);
   assert.ok(!blank.logs.some((line) => line.startsWith('ERR')), `不应抛错: ${blank.logs.join(' | ')}`);
 
-  // 自检信息应可读: 渲染出的诊断卡片里包含词库规模
-  const diag = diagText(rightSide);
-  assert.ok(diag && diag.includes('词 /'), `自检卡片应报告词库规模, 实际: ${diag}`);
+  assert.equal(diagText(rightSide), null, '用户要求没有额外诊断 GUI');
+  for (const run of [rightSide,onChar,onFirst,none,insideButton,blank]) run.cleanup();
 });
 
+test('用例14: 服务依赖缺失时确实拒绝激活, 无 styles 全局也能运行', () => {
+  assert.throws(() => runHoverOnce({element: {tagName:'SPAN'}, node:{nodeType:3,data:'WHO'},offset:1,inject:[]}), /without inject/);
+  const run=runHoverOnce({element:{tagName:'SPAN'},node:{nodeType:3,data:'WHO'},offset:1});
+  assert.ok(tipText(run).includes('世卫组织'));
+  assert.ok(run.elements.some(e=>e.type==='style'), '样式由 React 管理');
+  run.cleanup();
+  assert.ok(Object.values(run.listeners).every(v=>v.length===0), '卸载移除所有监听器');
+});
+
+test('用例15: 五个词、中文连续正文和短语走真实 mousemove 查询路径', () => {
+  for(const [text, offset, expected] of [
+    ['WHO',1,'世卫组织'],['API',1,'应用程序编程接口'],['DSH',1,'数字签名硬件'],
+    ['Cordis',2,'插件运行时'],['LLM',1,'大语言模型'],
+    ['即世界卫生组织发布报告',3,'简称世卫组织'],['United Nations',3,'联合国']
+  ]) {
+    const run=runHoverOnce({element:{tagName:'SPAN'},node:{nodeType:3,data:text},offset});
+    assert.ok((tipText(run)||'').includes(expected),text+' 应命中 '+expected);
+    run.cleanup();
+  }
+});
+
+test('用例16: 侧栏、行尾空白不触发, 滚动关闭浮层', () => {
+  for(const extra of [{outside:true},{blank:true}]) {
+    const run=runHoverOnce({element:{tagName:'SPAN'},node:{nodeType:3,data:'WHO'},offset:1,...extra});
+    assert.equal(tipText(run),null);
+    run.cleanup();
+  }
+  const run=runHoverOnce({element:{tagName:'SPAN'},node:{nodeType:3,data:'WHO'},offset:1});
+  assert.ok(tipText(run));
+  run.listeners.scroll.forEach(fn=>fn());
+  assert.equal(tipText(run),null);
+  run.cleanup();
+});

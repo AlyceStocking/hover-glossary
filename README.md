@@ -1,72 +1,34 @@
 # hover-glossary
 
-一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的**动态 Cordis 插件**：把鼠标停在对话正文里的某个词上，就在光标旁浮出该词的 **1..N 条联想（释义）**。
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的可持久安装浏览器插件：鼠标停在用户或助手聊天正文中的词上，显示 **1 → N 条释义**。
 
-正文既包括**你输入的内容**，也包括**模型输出的内容**。
+例如 `WHO` 显示“1. 世卫组织（缩写）；2. 谁（代词）”。词库与查询在浏览器内完成，不发送模型请求、不注册模型工具、不添加系统提示词，没有额外的词库面板或启动诊断卡片。
 
-演示：光标停在 `WHO` 上 →
+## 安装与更新
 
-```
-WHO                     2 条
-1. 世卫组织      缩写
-2. 谁            代词
-```
-
-## 特性
-
-- **词 → 1..N 条**：一个词显式对应多个条目，顺序与编号稳定可见。
-- **只作用于真实对话正文**：没有额外面板，词库维护不出现在界面里。
-- **中英混排**：拉丁词连续读取；多字词按最长匹配切分（`世界卫生组织` 优先于 `世卫组织`）。
-- **归一化匹配**：`who` / `Who` / `ＷＨＯ` / `(WHO)` 命中同一条目。
-- **纯浏览器侧**：词库内联在客户端 bundle 里，不发 RPC、不注册模型工具，也不占模型上下文。
-
-## 工作原理
-
-| 半边 | 位置 | 职责 |
-| --- | --- | --- |
-| Client | 浏览器 | 用 `elementFromPoint` + `caretRangeFromPoint` 取光标下的字符，截出所在的词，查内联词库后在 `shell.overlay` 里渲染浮层 |
-| Host | DSH Node 进程 | 只提供一个空的加载入口；词典与查询都在浏览器侧完成 |
-
-判定范围不依赖任何锚点元素：只要命中的是文本、且不在按钮/输入框等控件内，就参与查询。
-
-## 安装（可持久，扛得住重启）
-
-插件以**本地客户端插件包**的形式安装，重启后依然生效：
+在仓库根目录执行：
 
 ```powershell
-# 1. 安装包 (目录名必须等于 package.json 的 name)
-$dst = "$env:USERPROFILE\.dsh\profiles\node_modules\hover-glossary"
+node hover-glossary/scripts/build-client.mjs
+node hover-glossary/test/run.mjs
+$dst = Join-Path $env:USERPROFILE '.dsh/profiles/node_modules/hover-glossary'
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
-Copy-Item hover-glossary\plugin\package\* $dst -Recurse -Force
-
-# 2. 装配行 (仅首次安装需要; 之后重启 dsh web 生效)
-#    在 ~/.dsh/profiles/web/cordis.patch.yml 追加:
-#      - insert:
-#          - id: hover-glossary
-#            name: hover-glossary
+Copy-Item hover-glossary/plugin/package/* $dst -Recurse -Force
 ```
 
-> ⚠️ 不要用动态 Cordis 插件（`cordis_define` / `cordis_run`）来"安装"它。那种形式只活在
-> 当前进程的内存里，`dsh web` 一重启就消失 —— 这正是它第一次丢失的原因。
+首次安装时，在 `~/.dsh/profiles/web/cordis.patch.yml` 追加以下条目；已有时不要重复添加，保留其他插件配置：
 
-## 目录结构
-
-```
-.dsh/skills/glossary-mapping/SKILL.md   更新/安装词典映射的操作技能
-hover-glossary/
-├── src/lexicon.mjs                     词→N 条目的数据结构与光标查询算法（唯一实现）
-├── src/seed-data.mjs                   预置词库：映射只在这里维护
-├── plugin/host-service.js              Host 半模板（仅动态插件版本使用）
-├── plugin/client-panel.js              Client 半模板（悬停引擎 + 浮层 + 自检）
-├── plugin/cordis-define.json           成品：交给 cordis_define 的 { host, client }
-├── scripts/build-client.mjs            把 src/ 内联进产物并校验语法
-├── plugin/package/                     可持久安装的包 (package.json + lib/)
-└── test/                               13 个用例
+```yaml
+- insert:
+    - id: hover-glossary
+      name: hover-glossary
 ```
 
-## 词典数据
+重启 `dsh web`，通过启动时打印的认证 URL 打开页面。仅更新浏览器 bundle 时通常刷新即可；变更 manifest 或装配后应重启并验证。包和词库在磁盘上，重启后重新装载。不要用只驻留进程内存的 `cordis_define` / `cordis_run` 代替 profile 安装。
 
-改 `hover-glossary/src/seed-data.mjs` 即可增删词条：
+## 更新映射
+
+唯一词库源文件是 `hover-glossary/src/seed-data.mjs`：
 
 ```js
 TERM: [
@@ -75,27 +37,19 @@ TERM: [
 ],
 ```
 
-`weight` 越大越靠前，同权重保持书写顺序；`index` 由构建脚本按排序结果赋值，不要手写。
+`weight` 越大越靠前，相同权重保留登记顺序。运行上述构建、测试和安装步骤，再刷新验证。完整流程在 [glossary-mapping skill](.dsh/skills/glossary-mapping/SKILL.md)。
 
-完整的更新流程、匹配规则与注意事项见技能文档
-[`.dsh/skills/glossary-mapping/SKILL.md`](.dsh/skills/glossary-mapping/SKILL.md)。
+## 行为与边界
 
-## 开发
+- `who`、`Who`、`ＷＨＯ` 匹配同一词；`WHOLE` 不会误匹配 `WHO`。
+- 连续中文正文内按最长词匹配，如 `即世界卫生组织发布报告` 中的 `世界卫生组织`。
+- 英文短语目前从第一个词命中，如悬停 `United Nations` 中的 `United`。
+- 限于用户/助手聊天正文，跳过侧栏、设置、按钮、链接和编辑中的输入框。用户输入指已经发送的消息。
+- 查询限定单个 DOM 文本节点；跨多个样式节点拆开的词或短语不拼接查询。
+- 控制台 `globalThis.__hoverGlossaryDiag__` 可查看词库数量与取字 API 检查结果。
 
-```bash
-cd hover-glossary
-node test/run.mjs               # 全部 13 个用例
-node scripts/build-client.mjs   # 改 src/ 后重新生成 plugin/ 下的全部产物
-```
+## 开发与验证
 
-沙箱禁止 `node --test` 启动子进程（spawn EPERM），因此 `test/run.mjs` 用动态 import
-在同一个进程里加载各测试文件。
+16 个 Node 用例覆盖词库、产物同步、依赖声明、鼠标查询与卸载清理。另有真实浏览器脚本，验证实际 Harness 激活和既有聊天消息，并检查五个词的用户/助手区域样本。详见[开发说明](hover-glossary/README.md)。
 
-## 已知边界
-
-- 唯一的持久化路径是改 `hover-glossary/src/seed-data.mjs` → 重建 → 重装包。
-  `glossary/define` 只改某个运行进程的内存，重启即失，不是持久化 API。
-- CJK 没有分词边界，连续汉字整段成一个 token：收录的多字词前应当是空格、标点或行首，
-  否则会像 `即世卫组织` 里的 `即` 那样占住词首导致匹配不到。
-- 跨空格短语（`United Nations`）从第一个词开始命中；光标停在第二个词上时按该词自身查询。
-- 首次安装新增的装配行需要重启 `dsh web` 才生效；只替换包文件则不必。
+已在本地 Harness CLI `0.1.5-rc.1`、客户端组件 `0.1.5-rc.2` 与 Edge 上验证；其他版本需检查聊天 DOM 标记与 Slot 契约。

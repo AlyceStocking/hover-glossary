@@ -132,11 +132,8 @@ export function buildPackageManifest() {
         dsh: {
           client: {
             platform: 'web',
-            // `slots` 服务由 @deepseek-ai/dsh-client-ui-renderer 提供, 但本地客户端插件
-            // 约定用这个模块 id 声明依赖 (与 dsh-web-ui-notify 的写法一致)。
-            // 不声明的话 ctx.slots 解析不到 —— 这正是插件第一次在浏览器里
-            // 报 "slots 服务不可用" 并静默退出的原因。
-            inject: ['@deepseek-ai/dsh-client-ui-slots'],
+            // renderer 是 slots 的运行时提供者。服务访问另由 exports.inject 声明。
+            inject: ['@deepseek-ai/dsh-client-ui-renderer'],
           },
         },
         license: 'MIT',
@@ -147,39 +144,42 @@ export function buildPackageManifest() {
   );
 }
 
-const out = buildInlineSource();
+export function build() {
+  const out = buildInlineSource();
 
-mkdirSync(resolve(root, 'plugin'), { recursive: true });
-writeFileSync(resolve(root, 'plugin/client-inline.js'), out, 'utf8');
+  mkdirSync(resolve(root, 'plugin'), { recursive: true });
+  writeFileSync(resolve(root, 'plugin/client-inline.js'), out, 'utf8');
 
-// ---- 产物 1: 动态插件 ----
-const dynamicHost = buildDynamicHostSource();
-const browserModule = composeTemplate('plugin/client-panel.js');
-assertParses(browserModule, 'browser module');
+  // ---- 产物 1: 动态插件 ----
+  const dynamicHost = buildDynamicHostSource();
+  const browserModule = composeTemplate('plugin/client-panel.js');
+  assertParses(browserModule, 'browser module');
 
-writeFileSync(
-  resolve(root, 'plugin/cordis-define.json'),
-  JSON.stringify(
-    {
-      name: 'Hover Glossary',
-      purpose: '光标悬停在对话正文的词上时显示该词的 1..N 条联想释义',
-      code: { host: dynamicHost, client: browserModule },
-    },
-    null,
-    2,
-  ),
-  'utf8',
-);
+  writeFileSync(
+    resolve(root, 'plugin/cordis-define.json'),
+    JSON.stringify(
+      {
+        name: 'Hover Glossary',
+        purpose: '光标悬停在对话正文的词上时显示该词的 1..N 条联想释义',
+        code: { host: dynamicHost, client: browserModule },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
 
-// ---- 产物 2: 可持久安装的 profile 包 ----
-const pkgRoot = resolve(root, 'plugin/package');
-mkdirSync(resolve(pkgRoot, 'lib'), { recursive: true });
-writeFileSync(resolve(pkgRoot, 'package.json'), buildPackageManifest(), 'utf8');
-writeFileSync(resolve(pkgRoot, 'lib/index.js'), buildPackageHostSource(), 'utf8');
-writeFileSync(resolve(pkgRoot, 'lib/client.js'), browserModule, 'utf8');
+  // ---- 产物 2: 可持久安装的 profile 包 ----
+  const pkgRoot = resolve(root, 'plugin/package');
+  mkdirSync(resolve(pkgRoot, 'lib'), { recursive: true });
+  writeFileSync(resolve(pkgRoot, 'package.json'), buildPackageManifest(), 'utf8');
+  writeFileSync(resolve(pkgRoot, 'lib/index.js'), buildPackageHostSource(), 'utf8');
+  writeFileSync(resolve(pkgRoot, 'lib/client.js'), browserModule, 'utf8');
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   console.log(`[build] plugin/client-inline.js (${out.length} chars)`);
   console.log(`[build] plugin/cordis-define.json (host ${dynamicHost.length} / client ${browserModule.length})`);
   console.log('[build] plugin/package/ (package.json + lib/index.js + lib/client.js)');
 }
+
+// 测试导入纯构建函数时不能重写产物, 否则“产物过期”检测会自行修复被测文件。
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) build();
