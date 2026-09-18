@@ -138,11 +138,32 @@ test('用例13: profile 包是合法的客户端插件包 (可持久安装的前
   const mod = definition.factory(requireStub);
   const plugin = mod && mod.default ? mod.default : mod;
   assert.equal(typeof plugin.apply, 'function', 'factory 应导出 apply');
-  // 跨 realm 的空数组不能用 deepEqual 比较 (原型不同), 因此比序列化结果
-  assert.equal(JSON.stringify(plugin.inject), '[]', '纯客户端插件不应注入任何服务');
+  // 导出的 inject 是宿主加载器用的运行时依赖列表; 这里的插件不注入会话级服务,
+  // 它需要的 slots 由 package.json 的 dsh.client.inject 声明 (见下)
+  assert.equal(JSON.stringify(plugin.inject), '[]', '不应注入会话级服务');
+
+  // 关键契约: 必须声明 slots 依赖, 否则 ctx.slots 解析不到, 插件会静默失效。
+  // 这正是线上第一次 "完全没反应" 的原因 (ctx.get('slots') 返回 undefined)。
+  assert.equal(
+    JSON.stringify(manifest.dsh.client.inject),
+    JSON.stringify(['@deepseek-ai/dsh-client-ui-slots']),
+    'package.json 必须声明 slots 注入, 否则悬停字典在浏览器里不会注册任何东西',
+  );
+
+  const record = readFileSync(resolve(root, 'plugin/package/lib/client.js'), 'utf8');
+
+  // 取服务必须走已声明的注入 (ctx.slots); 只看代码行, 避免注释里的说明文字触发断言
+  const codeLines = record
+    .split('\n')
+    .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+    .join('\n');
+  assert.ok(/ctx\.slots/.test(codeLines), '应通过 ctx.slots 取得 slots 服务');
+  assert.ok(
+    !/ctx\.get\(\s*['"]slots['"]\s*\)/.test(codeLines),
+    '不应再用 ctx.get 取 slots —— 它会静默返回 undefined 让插件无声失效',
+  );
 
   // 内联词库在浏览器侧独立可用: 不再依赖任何 RPC
-  const record = readFileSync(resolve(root, 'plugin/package/lib/client.js'), 'utf8');
   [
     'host.call',
     "require('host')",

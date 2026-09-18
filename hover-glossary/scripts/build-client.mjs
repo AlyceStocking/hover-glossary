@@ -129,7 +129,16 @@ export function buildPackageManifest() {
           './client': './lib/client.js',
           './package.json': './package.json',
         },
-        dsh: { client: { platform: 'web' } },
+        dsh: {
+          client: {
+            platform: 'web',
+            // `slots` 服务由 @deepseek-ai/dsh-client-ui-renderer 提供, 但本地客户端插件
+            // 约定用这个模块 id 声明依赖 (与 dsh-web-ui-notify 的写法一致)。
+            // 不声明的话 ctx.slots 解析不到 —— 这正是插件第一次在浏览器里
+            // 报 "slots 服务不可用" 并静默退出的原因。
+            inject: ['@deepseek-ai/dsh-client-ui-slots'],
+          },
+        },
         license: 'MIT',
       },
       null,

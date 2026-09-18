@@ -415,9 +415,11 @@ function runHoverOnce(options) {
     throw new Error('不允许的 require: ' + name);
   });
 
-  // register 期只登记渲染函数, 不执行; apply 之后统一首渲
+  // register 期只登记渲染函数, 不执行; apply 之后统一首渲。
+  // ctx 只提供 ctx.slots (与真实运行时一致), 刻意不提供 ctx.get('slots') ——
+  // 这样 "依赖没声明导致静默失效" 这类问题会在测试里直接暴露。
   plugin.apply({
-    get: (name) => (name === 'slots' ? slots : undefined),
+    slots,
     effect: (effect) => {
       const cleanup = effect();
       if (typeof cleanup === 'function') pendingCleanups.push(cleanup);

@@ -227,9 +227,12 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
-      const slots = ctx.get('slots');
+      // slots 是已声明的注入依赖 (见 package.json 的 dsh.client.inject), 因此用 ctx.slots。
+      // 不要退回可选取值写法: 它在服务未解析时会静默拿到 undefined,
+      // 让插件无声失效 —— 那正是之前最难查的一点。
+      const slots = ctx.slots;
       if (slots === undefined) {
-        console.error('slots 服务不可用: 悬停词典未注册');
+        console.error('slots 服务不可用: 悬停词典未注册 (检查 dsh.client.inject 是否声明了 slots)');
         return;
       }
       const disposeStyles = styles.insert(CSS);
