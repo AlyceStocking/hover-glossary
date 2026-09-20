@@ -1,5 +1,2 @@
 node_modules/
 *.log
-
-# 会话/工具产物, 不属于插件本身
-hover-glossary/node_modules/

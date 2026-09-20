@@ -6,29 +6,19 @@
 
 ## 安装与更新
 
-在仓库根目录执行：
+用 dsh 自带的插件管理命令安装（包装好后会出现在「设置 → 插件」管理界面里，可启停、可移除）：
 
-```powershell
-node hover-glossary/scripts/build-client.mjs
-node hover-glossary/test/run.mjs
-$dst = Join-Path $env:USERPROFILE '.dsh/profiles/node_modules/hover-glossary'
-New-Item -ItemType Directory -Force -Path $dst | Out-Null
-Copy-Item hover-glossary/plugin/package/* $dst -Recurse -Force
+```bash
+dsh plugin --profile web add github:AlyceStocking/hover-glossary
 ```
 
-首次安装时，在 `~/.dsh/profiles/web/cordis.patch.yml` 追加以下条目；已有时不要重复添加，保留其他插件配置：
+然后重启 `dsh web`，通过启动时打印的认证 URL 打开页面。仅更新浏览器 bundle 时通常刷新即可；变更 manifest 或装配后应重启并验证。包和词库在磁盘上，重启后重新装载。
 
-```yaml
-- insert:
-    - id: hover-glossary
-      name: hover-glossary
-```
-
-重启 `dsh web`，通过启动时打印的认证 URL 打开页面。仅更新浏览器 bundle 时通常刷新即可；变更 manifest 或装配后应重启并验证。包和词库在磁盘上，重启后重新装载。不要用只驻留进程内存的 `cordis_define` / `cordis_run` 代替 profile 安装。
+> 不要用手动复制到 `node_modules` + 编辑 `cordis.patch.yml` 的方式安装：那样插件能运行，但因为不是 profile 的 pnpm 依赖，插件管理 UI 不会列出它。也不要用只驻留进程内存的 `cordis_define` / `cordis_run` 代替 profile 安装。
 
 ## 更新映射
 
-唯一词库源文件是 `hover-glossary/src/seed-data.mjs`：
+唯一词库源文件是 `src/seed-data.mjs`：
 
 ```js
 TERM: [
@@ -37,7 +27,7 @@ TERM: [
 ],
 ```
 
-`weight` 越大越靠前，相同权重保留登记顺序。运行上述构建、测试和安装步骤，再刷新验证。完整流程在 [glossary-mapping skill](.dsh/skills/glossary-mapping/SKILL.md)。
+`weight` 越大越靠前，相同权重保留登记顺序。改动后运行 `node scripts/build-client.mjs` 与 `node test/run.mjs`，重新安装并刷新验证。完整流程在 [glossary-mapping skill](.dsh/skills/glossary-mapping/SKILL.md)。
 
 ## 行为与边界
 
@@ -50,6 +40,6 @@ TERM: [
 
 ## 开发与验证
 
-16 个 Node 用例覆盖词库、产物同步、依赖声明、鼠标查询与卸载清理。另有真实浏览器脚本，验证实际 Harness 激活和既有聊天消息，并检查五个词的用户/助手区域样本。详见[开发说明](hover-glossary/README.md)。
+16 个 Node 用例覆盖词库、产物同步、依赖声明、鼠标查询与卸载清理。另有真实浏览器脚本，验证实际 Harness 激活和既有聊天消息，并检查五个词的用户/助手区域样本。详见[开发说明](DEVELOPMENT.md)。
 
 已在本地 Harness CLI `0.1.5-rc.1`、客户端组件 `0.1.5-rc.2` 与 Edge 上验证；其他版本需检查聊天 DOM 标记与 Slot 契约。

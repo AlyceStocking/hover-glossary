@@ -21,7 +21,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** 可持久安装的客户端 bundle (浏览器模块), 用例 10-12 的测试对象 */
 function browserModuleSource() {
-  return readFileSync(resolve(root, 'plugin/package/lib/client.js'), 'utf8');
+  return readFileSync(resolve(root, 'lib/client.js'), 'utf8');
 }
 const define = JSON.parse(readFileSync(resolve(root, 'plugin/cordis-define.json'), 'utf8'));
 

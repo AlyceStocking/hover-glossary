@@ -1,13 +1,15 @@
 /**
  * hover-glossary / scripts/build-client.mjs
  *
- * 从 src/ 的单一实现生成两套产物:
+ * 从 src/ 的单一实现生成产物:
  *
  * 1. plugin/cordis-define.json —— 动态插件 (进程内, 重启消失) 的 { host, client } 函数体。
- * 2. plugin/package/ —— 可持久安装的 profile 包:
- *      package.json      声明 dsh.client.platform=web
+ * 2. lib/ —— 仓库根目录本身就是可持久安装的 profile 包:
  *      lib/index.js      host 半边: 空 apply (纯客户端能力)
  *      lib/client.js     browser module: window.__ModuleLoader__.load({ id, factory })
+ *
+ * 根 package.json 是手工维护的发布清单 (含 dsh.bundle / dsh.client 声明),
+ * 本脚本不生成它; 改动清单字段后运行 test/ 里的契约用例校验。
  *
  * 之所以能纯客户端: 词库内联在浏览器侧, 不需要 RPC, 也不依赖会话级服务。
  *
@@ -19,8 +21,6 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
-const PKG_NAME = 'hover-glossary';
-const PKG_VERSION = '1.0.0';
 
 /** 去掉 JSDoc 块注释 (其中可能含有 import 字样, 会干扰闭包解析) */
 function stripDocs(source) {
@@ -113,37 +113,6 @@ export function buildPackageHostSource() {
   ].join('\n');
 }
 
-/** 静态 profile 包的 package.json */
-export function buildPackageManifest() {
-  return (
-    JSON.stringify(
-      {
-        name: PKG_NAME,
-        version: PKG_VERSION,
-        private: true,
-        description: 'DSH 客户端插件: 光标停在对话正文的词上, 显示该词的 1..N 条联想',
-        type: 'module',
-        main: 'lib/index.js',
-        exports: {
-          '.': './lib/index.js',
-          './client': './lib/client.js',
-          './package.json': './package.json',
-        },
-        dsh: {
-          client: {
-            platform: 'web',
-            // renderer 是 slots 的运行时提供者。服务访问另由 exports.inject 声明。
-            inject: ['@deepseek-ai/dsh-client-ui-renderer'],
-          },
-        },
-        license: 'MIT',
-      },
-      null,
-      2,
-    ) + '\n'
-  );
-}
-
 export function build() {
   const out = buildInlineSource();
 
@@ -169,16 +138,14 @@ export function build() {
     'utf8',
   );
 
-  // ---- 产物 2: 可持久安装的 profile 包 ----
-  const pkgRoot = resolve(root, 'plugin/package');
-  mkdirSync(resolve(pkgRoot, 'lib'), { recursive: true });
-  writeFileSync(resolve(pkgRoot, 'package.json'), buildPackageManifest(), 'utf8');
-  writeFileSync(resolve(pkgRoot, 'lib/index.js'), buildPackageHostSource(), 'utf8');
-  writeFileSync(resolve(pkgRoot, 'lib/client.js'), browserModule, 'utf8');
+  // ---- 产物 2: 仓库根目录的持久安装包 (lib/) ----
+  mkdirSync(resolve(root, 'lib'), { recursive: true });
+  writeFileSync(resolve(root, 'lib/index.js'), buildPackageHostSource(), 'utf8');
+  writeFileSync(resolve(root, 'lib/client.js'), browserModule, 'utf8');
 
   console.log(`[build] plugin/client-inline.js (${out.length} chars)`);
   console.log(`[build] plugin/cordis-define.json (host ${dynamicHost.length} / client ${browserModule.length})`);
-  console.log('[build] plugin/package/ (package.json + lib/index.js + lib/client.js)');
+  console.log('[build] lib/ (index.js + client.js)');
 }
 
 // 测试导入纯构建函数时不能重写产物, 否则“产物过期”检测会自行修复被测文件。

@@ -5,31 +5,26 @@ description: Update, rebuild, install, and verify the persistent hover-glossary 
 
 # Maintain the hover glossary
 
-The repository contains `hover-glossary/`. The sole persistent mapping source is
-`hover-glossary/src/seed-data.mjs`. Do not add a glossary GUI or model-facing tools.
+The repository root is the installable package. The sole persistent mapping source is
+`src/seed-data.mjs`. Do not add a glossary GUI or model-facing tools.
 
 ## Durable update
 
 1. Edit the source mapping, preserving unrelated entries.
-2. From the repository root run `node hover-glossary/scripts/build-client.mjs`.
-3. Run `node hover-glossary/test/run.mjs` (16 tests). Tests do not regenerate files;
+2. From the repository root run `node scripts/build-client.mjs`.
+3. Run `node test/run.mjs` (16 tests). Tests do not regenerate files;
    a stale artifact should fail verification.
-4. Copy the contents of `hover-glossary/plugin/package/` into
-   `~/.dsh/profiles/node_modules/hover-glossary/`.
+4. Install or update with `dsh plugin --profile web add github:AlyceStocking/hover-glossary`.
 5. Reload the browser and hover a changed word in a sent user or assistant message.
    Restart Harness when the manifest or composition changed, and whenever verifying
    persistence. Open the authenticated URL printed at startup.
 6. Review the diff before committing. Publish only when requested.
 
-First installation also needs a single entry in `~/.dsh/profiles/web/cordis.patch.yml`:
-
-```yaml
-- insert:
-    - id: hover-glossary
-      name: hover-glossary
-```
-
-Preserve other rows and comments; avoid duplicates.
+Do not install by copying files into `~/.dsh/profiles/node_modules/` and editing
+`cordis.patch.yml` by hand: the plugin runs, but because it is not a pnpm dependency
+of the profile, the plugin management UI never lists it. The bundle's own
+`cordis.patch.yml` mounts the entry automatically once the package is installed as a
+profile dependency.
 
 The package has an empty Host `apply` and a browser module containing the lexicon.
 It uses no RPC or model request. Dynamic `cordis_define` / `cordis_run` state and the
@@ -63,11 +58,11 @@ settings text are excluded.
 - `shell.overlay` is registered through `ctx.slots.inject`; styles are React `<style>`
   elements. There is no injected/global `styles` helper.
 - Do not hand-edit generated `plugin/client-inline.js`, `plugin/cordis-define.json`,
-  or `plugin/package/**`; change source/templates and rebuild.
+  or `lib/**`; change source/templates and rebuild.
 - Successful bundle delivery or a permissive mocked context does not prove activation.
   Verify in a browser; `__hoverGlossaryDiag__` gives console diagnostics without extra UI.
-- `hover-glossary/test/browser.mjs` tests a running installation, existing conversation WHO
-  text, and transient DOM fixtures. See `hover-glossary/README.md` for environment variables.
+- `test/browser.mjs` tests a running installation, existing conversation WHO
+  text, and transient DOM fixtures. See `DEVELOPMENT.md` for environment variables.
   Run again after a fresh Host process starts to prove persistence. Keep authentication
   URLs out of reports.
 

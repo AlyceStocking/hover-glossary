@@ -18,7 +18,7 @@ import vm from 'node:vm';
 
 import { createLexicon } from '../src/lexicon.mjs';
 import { SEED_TABLE } from '../src/seed-data.mjs';
-import { buildInlineSource, composeTemplate, buildPackageManifest, buildPackageHostSource } from '../scripts/build-client.mjs';
+import { buildInlineSource, composeTemplate, buildPackageHostSource } from '../scripts/build-client.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -81,13 +81,12 @@ test('用例7: 产物与构建脚本的输出保持同步 (未过期)', () => {
   assert.equal(actual, expected, 'plugin/client-inline.js 已过期, 请运行 node scripts/build-client.mjs');
 
   // 两套产物必须来自同一份内联源码, 否则动态版与持久版会漂移
-  const bundle = readFileSync(resolve(root, 'plugin/package/lib/client.js'), 'utf8');
+  const bundle = readFileSync(resolve(root, 'lib/client.js'), 'utf8');
   const defineJson = JSON.parse(readFileSync(resolve(root, 'plugin/cordis-define.json'), 'utf8'));
-  assert.equal(defineJson.code.client, bundle, 'plugin/package/lib/client.js 与 cordis-define.json 的 client 不一致');
+  assert.equal(defineJson.code.client, bundle, 'lib/client.js 与 cordis-define.json 的 client 不一致');
   assert.ok(bundle.includes(expected), 'profile 包未包含内联词库');
   assert.equal(bundle, composeTemplate('plugin/client-panel.js'), '客户端模板改动后必须重新构建');
-  assert.equal(readFileSync(resolve(root, 'plugin/package/package.json'), 'utf8'), buildPackageManifest());
-  assert.equal(readFileSync(resolve(root, 'plugin/package/lib/index.js'), 'utf8'), buildPackageHostSource());
+  assert.equal(readFileSync(resolve(root, 'lib/index.js'), 'utf8'), buildPackageHostSource());
 });
 
 /**
@@ -95,7 +94,7 @@ test('用例7: 产物与构建脚本的输出保持同步 (未过期)', () => {
  * 提供 window.__ModuleLoader__ 与 require 桩, 取回 factory。
  */
 function loadBrowserModule() {
-  const bundle = readFileSync(resolve(root, 'plugin/package/lib/client.js'), 'utf8');
+  const bundle = readFileSync(resolve(root, 'lib/client.js'), 'utf8');
   let captured = null;
   const sandbox = { console: { log() {}, error() {} }, Date, setTimeout, clearTimeout, globalThis: undefined };
   sandbox.window = sandbox;
@@ -110,15 +109,22 @@ function loadBrowserModule() {
   return { definition: captured, sandbox };
 }
 
-test('用例13: profile 包是合法的客户端插件包 (可持久安装的前提)', () => {
-  const manifest = JSON.parse(readFileSync(resolve(root, 'plugin/package/package.json'), 'utf8'));
+test('用例13: 仓库根目录是合法的客户端插件包 (可持久安装的前提)', () => {
+  const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
   // 契约: 本地包靠 dsh.client.platform 声明自己是浏览器插件, 否则加载器不会挂载
   assert.equal(manifest.dsh.client.platform, 'web');
   assert.equal(manifest.type, 'module');
   assert.ok(manifest.exports['./client'], '应导出 ./client');
 
+  // 契约: dsh.bundle.patch 指向真实存在的装配补丁, 否则 dsh plugin add 只会
+  // 把它当作普通依赖, 插件管理 UI 不会列出它, 也不会自动挂载
+  assert.equal(manifest.dsh.bundle.patch, './cordis.patch.yml', '应声明 dsh.bundle.patch');
+  assert.equal(manifest.exports['./cordis.patch.yml'], './cordis.patch.yml', '应导出 ./cordis.patch.yml');
+  const patch = readFileSync(resolve(root, 'cordis.patch.yml'), 'utf8');
+  assert.ok(patch.includes(`name: '${manifest.name}'`), '装配补丁应按包名挂载本插件');
+
   // host 半边必须是可被 Node 加载的 ESM, 且只导出 apply
-  const hostEntry = readFileSync(resolve(root, 'plugin/package/lib/index.js'), 'utf8');
+  const hostEntry = readFileSync(resolve(root, 'lib/index.js'), 'utf8');
   assert.ok(/export\s*\{\s*apply\s*\}/.test(hostEntry), 'host 半边应导出 apply');
   assert.ok(!/^\s*import\s/m.test(hostEntry), 'host 半边不需要 import');
 
@@ -151,7 +157,7 @@ test('用例13: profile 包是合法的客户端插件包 (可持久安装的前
     'package.json 必须声明 slots 注入, 否则悬停字典在浏览器里不会注册任何东西',
   );
 
-  const record = readFileSync(resolve(root, 'plugin/package/lib/client.js'), 'utf8');
+  const record = readFileSync(resolve(root, 'lib/client.js'), 'utf8');
 
   // 取服务必须走已声明的注入 (ctx.slots); 只看代码行, 避免注释里的说明文字触发断言
   const codeLines = record

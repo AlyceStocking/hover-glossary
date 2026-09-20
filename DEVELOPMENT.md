@@ -1,13 +1,13 @@
 # hover-glossary 开发说明
 
-可持久安装的浏览器插件：在用户与助手聊天正文中悬停，显示词语的多个释义。安装见[仓库首页](../README.md)，维护见[glossary-mapping skill](../.dsh/skills/glossary-mapping/SKILL.md)。
+可持久安装的浏览器插件：在用户与助手聊天正文中悬停，显示词语的多个释义。安装见[仓库首页](README.md)，维护见[glossary-mapping skill](.dsh/skills/glossary-mapping/SKILL.md)。
 
 ## 源码与构建
 
 - `src/seed-data.mjs`：唯一持久词库，词 → 条目数组。
 - `src/lexicon.mjs`：`Map<normalizedKey, Entry[]>`、归一化、光标处最长匹配。
 - `plugin/client-panel.js`：浏览器模块模板，字符几何命中、聊天范围、浮层与监听器生命周期。
-- `scripts/build-client.mjs`：生成内联副本与 `plugin/package/`。导入构建函数不会修改产物。
+- `scripts/build-client.mjs`：生成内联副本与根目录的 `lib/`（仓库根本身就是可安装的 profile 包）。导入构建函数不会修改产物。
 - `plugin/host-service.js`、`plugin/cordis-define.json`：保留的旧实验产物；当前安装与查询不使用它们。
 
 ```powershell
