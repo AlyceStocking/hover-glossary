@@ -13,7 +13,7 @@
 用 dsh 自带的插件管理命令安装（包装好后会出现在「设置 → 插件」管理界面里，可启停、可移除）：
 
 ```bash
-# npm 发布完成后使用
+# 从 npm 安装
 dsh plugin --profile desktop add hover-glossary@1.1.0
 # GitHub 源码安装（当前可用）
 dsh plugin --profile desktop add github:AlyceStocking/hover-glossary
